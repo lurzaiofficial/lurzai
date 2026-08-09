@@ -57,7 +57,8 @@ export const SignalStatsPanel: React.FC<SignalStatsPanelProps> = ({ data }) => {
   }
 
   const s = data.stats;
-  const overtrading = data.signalsToday >= data.maxSignalsPerDay;
+  const dayCap = data.plan?.maxAnalysesPerDay ?? data.maxSignalsPerDay;
+  const overtrading = data.signalsToday >= dayCap;
 
   return (
     <Card className="border-border bg-card text-card-foreground shadow-sm">
@@ -67,7 +68,8 @@ export const SignalStatsPanel: React.FC<SignalStatsPanelProps> = ({ data }) => {
           <CardTitle className="text-base font-bold">Track Record</CardTitle>
         </div>
         <Badge variant="outline" className="text-[10px] border-border text-muted-foreground">
-          {data.signalsToday}/{data.maxSignalsPerDay} today
+          {data.plan ? `${data.plan.name} · ` : ''}
+          {data.signalsToday}/{dayCap} today
         </Badge>
       </CardHeader>
 
@@ -76,8 +78,8 @@ export const SignalStatsPanel: React.FC<SignalStatsPanelProps> = ({ data }) => {
           <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 flex items-start gap-2">
             <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
             <p className="text-[11px] text-foreground/90">
-              You have run {data.signalsToday} analyses today. Constantly hunting for setups usually
-              leads to worse decisions — the best trades are rare.
+              Free plan daily limit reached ({dayCap} analyses). Pro and Max plans with stronger
+              models are coming soon.
             </p>
           </div>
         )}

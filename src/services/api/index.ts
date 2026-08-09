@@ -24,6 +24,9 @@ import type {
   TrackedSignalView,
   AssetClass,
 } from '../../../shared/types';
+import type { UserPlanView } from '../../../shared/plans';
+
+export type { UserPlanView };
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly detail?: unknown) {
@@ -116,6 +119,10 @@ export const settingsApi = {
     request<ServerSettings>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
 };
 
+export const planApi = {
+  get: () => request<UserPlanView>('/plan'),
+};
+
 // ---------------------------------------------------------------- analysis
 
 export interface AnalyzeResponse {
@@ -178,6 +185,7 @@ export interface StatsResponse {
   stats: SignalStats;
   signalsToday: number;
   maxSignalsPerDay: number;
+  plan: UserPlanView;
 }
 
 export const signalsApi = {

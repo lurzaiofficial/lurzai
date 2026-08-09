@@ -31,19 +31,31 @@ function dbFile(): string {
   return path.join(dataDir(), 'tradepilot.json');
 }
 
+interface UsageDay {
+  /** UTC calendar day key YYYY-MM-DD */
+  dayKey: string;
+  chatCount: number;
+}
+
 interface DbShape {
   version: number;
   settings: Record<string, ServerSettings>;
   signals: SignalRecord[];
   tracked: TrackedSignal[];
+  usage: Record<string, UsageDay>;
 }
 
 const EMPTY_DB: DbShape = {
-  version: 2,
+  version: 3,
   settings: {},
   signals: [],
   tracked: [],
+  usage: {},
 };
+
+function utcDayKey(now = Date.now()): string {
+  return new Date(now).toISOString().slice(0, 10);
+}
 
 class Store {
   private db: DbShape = structuredClone(EMPTY_DB);
@@ -217,6 +229,30 @@ class Store {
 
   listActiveTracked(userId: string): TrackedSignal[] {
     return this.listTracked(userId).filter((t) => t.status === 'ACTIVE');
+  }
+
+  // ------------------------------------------------------------------- usage
+
+  getChatUsageToday(userId: string, now = Date.now()): number {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== utcDayKey(now)) return 0;
+    return row.chatCount;
+  }
+
+  incrementChatUsage(userId: string, now = Date.now()): number {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) {
+      this.db.usage[userId] = { dayKey, chatCount: 1 };
+    } else {
+      row.chatCount += 1;
+    }
+    this.persist();
+    return this.db.usage[userId]!.chatCount;
   }
 }
 

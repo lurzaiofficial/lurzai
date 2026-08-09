@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Settings, Cpu, ShieldCheck, Sliders, Info, Database } from 'lucide-react';
 import type { ProviderStatus, ServerSettings, Timeframe } from '../types';
+import type { UserPlanView } from '../services/api';
 import {
   Dialog,
   DialogContent,
@@ -21,6 +22,7 @@ interface SettingsModalProps {
   onClose: () => void;
   settings: ServerSettings;
   providers: ProviderStatus[];
+  plan: UserPlanView | null;
   onSave: (patch: Partial<ServerSettings>) => Promise<void>;
 }
 
@@ -73,10 +75,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   settings,
   providers,
+  plan,
   onSave,
 }) => {
   const [form, setForm] = useState<ServerSettings>(settings);
   const [saving, setSaving] = useState(false);
+  const analysisCap = plan?.maxAnalysesPerDay ?? 5;
 
   // Re-sync on open so the form never shows stale values.
   useEffect(() => {
@@ -88,7 +92,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave(form);
+      const payload: Partial<ServerSettings> = {
+        ...form,
+        maxSignalsPerDay: Math.min(form.maxSignalsPerDay, analysisCap),
+      };
+      if (plan && !plan.canChangeModel) {
+        payload.aiModel = plan.aiModel;
+      }
+      await onSave(payload);
       onClose();
     } finally {
       setSaving(false);
@@ -156,10 +167,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 label="Overtrading warning after"
                 suffix="signals/day"
                 value={form.maxSignalsPerDay}
-                onChange={(v) => patch({ maxSignalsPerDay: v })}
+                onChange={(v) => patch({ maxSignalsPerDay: Math.min(v, analysisCap) })}
                 min={1}
-                max={500}
-                hint="A reminder appears once you exceed this many analyses in a day."
+                max={analysisCap}
+                hint={`Hard-capped by your ${plan?.name ?? 'Free'} plan at ${analysisCap}/day.`}
               />
               <NumberField
                 label="Cooldown per market"
@@ -226,16 +237,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
 
             <div className="space-y-1.5">
-              <label className="font-semibold text-foreground">Model</label>
-              <Input
-                type="text"
-                value={form.aiModel}
-                onChange={(e) => patch({ aiModel: e.target.value })}
-                className="font-mono bg-background border-border"
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Must be a model available to the configured service account.
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <label className="font-semibold text-foreground">AI model tier</label>
+                {plan && (
+                  <Badge variant="outline" className="text-[10px] border-border">
+                    {plan.name} · {plan.aiModelLabel}
+                  </Badge>
+                )}
+              </div>
+              {plan && !plan.canChangeModel ? (
+                <>
+                  <Input
+                    type="text"
+                    value={plan.aiModelLabel}
+                    readOnly
+                    className="font-mono bg-muted/50 border-border text-muted-foreground"
+                  />
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    {plan.aiTierNote} {plan.upgradeNote}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Input
+                    type="text"
+                    value={form.aiModel}
+                    onChange={(e) => patch({ aiModel: e.target.value })}
+                    className="font-mono bg-background border-border"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Must be a model available to the configured service account.
+                  </p>
+                </>
+              )}
             </div>
 
             <div className="space-y-2 pt-2 border-t border-border">

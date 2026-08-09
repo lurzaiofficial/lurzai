@@ -360,7 +360,8 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   minSignalQuality: 60,
   minRiskReward: 1.5,
   accountRiskPercent: 1,
-  maxSignalsPerDay: 25,
+  /** Free-tier default; paid plans raise this when billing ships. */
+  maxSignalsPerDay: 5,
   cooldownMinutes: 0,
   requireStopLoss: true,
   maxMarketDataAgeSeconds: 120,

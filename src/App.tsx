@@ -415,6 +415,15 @@ export default function App() {
   const handleToggleFavourite = () => {
     if (!instrument) return;
     const exists = favourites.some((f) => f.id === instrument.id);
+    if (!exists) {
+      const favCap = stats?.plan?.maxFavourites ?? 10;
+      if (favourites.length >= favCap) {
+        toast.error(
+          `Free plan limit reached: ${favCap} favourites. Pro and Max are coming soon.`
+        );
+        return;
+      }
+    }
     void persistFavourites(
       exists ? favourites.filter((f) => f.id !== instrument.id) : [...favourites, instrument]
     );
@@ -432,6 +441,15 @@ export default function App() {
     }
     if (!aiAvailable) {
       toast.error('AI analysis is unavailable on this server.');
+      return;
+    }
+    const plan = stats?.plan;
+    const used = stats?.signalsToday ?? 0;
+    const cap = plan?.maxAnalysesPerDay ?? settings.maxSignalsPerDay;
+    if (used >= cap) {
+      toast.error(
+        `Free plan limit reached: ${cap} analyses per day. Pro and Max plans are coming soon.`
+      );
       return;
     }
     setIsAnalyseSetupOpen(true);
@@ -582,6 +600,7 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           activeCount={tracked.filter((t) => t.status === 'ACTIVE').length}
           signalsToday={stats?.signalsToday ?? 0}
+          plan={stats?.plan ?? null}
         />
 
         <SidebarInset>
@@ -681,6 +700,7 @@ export default function App() {
           onClose={() => setIsSettingsOpen(false)}
           settings={settings}
           providers={connection?.providers ?? []}
+          plan={stats?.plan ?? null}
           onSave={handleSaveSettings}
         />
 

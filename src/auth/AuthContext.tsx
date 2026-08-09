@@ -4,10 +4,11 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import {
@@ -16,6 +17,14 @@ import {
   type AuthUser,
   type SignUpResult,
 } from './types';
+
+function isDashboardPath(pathname: string): boolean {
+  return pathname === '/app' || pathname.startsWith('/app/');
+}
+
+function isAuthExemptPath(pathname: string): boolean {
+  return pathname === '/reset-password';
+}
 
 export type AuthMode = 'signin' | 'signup';
 
@@ -71,6 +80,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  /** Allows sign-in/up on `/` to reach `/app` before off-dashboard logout runs. */
+  const enteringDashboardRef = useRef(false);
+  const signingOutRef = useRef(false);
 
   useEffect(() => {
     clearLegacyLocalAuth();
@@ -96,6 +109,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Session is only for the dashboard. Anywhere else (except password recovery)
+  // signs the user out and keeps them on the home page.
+  useEffect(() => {
+    if (!isReady || !user) return;
+
+    if (isDashboardPath(location.pathname)) {
+      enteringDashboardRef.current = false;
+      return;
+    }
+
+    if (isAuthExemptPath(location.pathname)) return;
+    if (enteringDashboardRef.current) return;
+    if (signingOutRef.current) return;
+
+    signingOutRef.current = true;
+    void supabase.auth
+      .signOut()
+      .catch(() => {
+        // Still clear local auth state if the network call fails.
+      })
+      .finally(() => {
+        setUser(null);
+        setAuthOpen(false);
+        signingOutRef.current = false;
+        if (location.pathname !== '/') {
+          navigate('/', { replace: true });
+        }
+      });
+  }, [isReady, user, location.pathname, navigate]);
+
   // Deep-link / protected-route handoff: /?auth=signin|signup
   useEffect(() => {
     if (!isReady) return;
@@ -103,6 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (raw !== 'signin' && raw !== 'signup') return;
 
     if (user) {
+      enteringDashboardRef.current = true;
       navigate('/app', { replace: true });
       return;
     }
@@ -130,6 +174,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const openAuth = useCallback(
     (mode: AuthMode = 'signin') => {
       if (user) {
+        enteringDashboardRef.current = true;
         navigate('/app');
         return;
       }
@@ -169,6 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error('Sign in succeeded but no session was returned. Confirm your email if required.');
       }
 
+      enteringDashboardRef.current = true;
       setUser(mapUser(data.user));
       setAuthOpen(false);
       clearAuthParam();
@@ -223,6 +269,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { status: 'confirm_email' };
       }
 
+      enteringDashboardRef.current = true;
       setUser(mapped);
       setAuthOpen(false);
       clearAuthParam();
@@ -232,10 +279,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw new Error(error.message);
-    setUser(null);
-    navigate('/');
+    signingOutRef.current = true;
+    enteringDashboardRef.current = false;
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw new Error(error.message);
+      setUser(null);
+      setAuthOpen(false);
+      navigate('/', { replace: true });
+    } finally {
+      signingOutRef.current = false;
+    }
   }, [navigate]);
 
   const resetPassword = useCallback(async (email: string) => {

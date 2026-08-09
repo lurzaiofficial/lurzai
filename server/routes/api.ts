@@ -30,6 +30,12 @@ import {
   MAX_WINDOW_MINUTES,
   MIN_WINDOW_MINUTES,
 } from '../../shared/analysis/tradeWindow';
+import {
+  applyPlanToSettings,
+  buildUserPlanView,
+  planModelForRequest,
+  resolvePlan,
+} from '../lib/plan';
 import { checkTrackedSignal, closeTracked, computeStats, trackSignal } from '../lib/tracking';
 import { logger } from '../lib/logger';
 import { isEmailConfigured, sendWelcomeEmail } from '../lib/email';
@@ -323,12 +329,21 @@ api.get('/market/stream-config', async (req, res) => {
 
 // ----------------------------------------------------------------- settings
 
+api.get('/plan', (req, res) => {
+  const sid = ensureSession(req, res);
+  const todaySignals = store.listSignalsSince(sid, startOfDay());
+  res.json(buildUserPlanView(sid, todaySignals.length));
+});
+
 api.get('/settings', (req, res) => {
-  res.json(store.getSettings(ensureSession(req, res)));
+  const sid = ensureSession(req, res);
+  const plan = resolvePlan(sid);
+  res.json(applyPlanToSettings(store.getSettings(sid), plan));
 });
 
 api.put('/settings', (req, res) => {
   const sid = ensureSession(req, res);
+  const plan = resolvePlan(sid);
   const body = req.body || {};
 
   // Whitelist and clamp: these values drive the advisory verdict.
@@ -336,7 +351,7 @@ api.put('/settings', (req, res) => {
     ['minSignalQuality', 0, 100],
     ['minRiskReward', 0.1, 100],
     ['accountRiskPercent', 0.1, 100],
-    ['maxSignalsPerDay', 1, 500],
+    ['maxSignalsPerDay', 1, plan.maxAnalysesPerDay],
     ['cooldownMinutes', 0, 1440],
     ['maxMarketDataAgeSeconds', 5, 3600],
     ['aiTemperature', 0, 2],
@@ -351,16 +366,22 @@ api.put('/settings', (req, res) => {
     }
   }
 
-  if (typeof body.aiModel === 'string' && body.aiModel.trim()) patch.aiModel = body.aiModel.trim();
+  // Free / Pro lock the model to the plan tier. Max may choose later.
+  if (plan.canChangeModel && typeof body.aiModel === 'string' && body.aiModel.trim()) {
+    patch.aiModel = body.aiModel.trim();
+  } else {
+    patch.aiModel = plan.aiModel;
+  }
+
   if (typeof body.requireStopLoss === 'boolean') patch.requireStopLoss = body.requireStopLoss;
   if (parseTimeframe(body.defaultTimeframe)) patch.defaultTimeframe = body.defaultTimeframe;
   if (Array.isArray(body.favourites)) {
     patch.favourites = body.favourites
       .filter((f: unknown) => typeof f === 'string')
-      .slice(0, 50);
+      .slice(0, plan.maxFavourites);
   }
 
-  res.json(store.saveSettings(sid, patch));
+  res.json(applyPlanToSettings(store.saveSettings(sid, patch), plan));
 });
 
 // -------------------------------------------------------------- AI analysis
@@ -371,7 +392,8 @@ api.put('/settings', (req, res) => {
  */
 api.post('/analyze', async (req, res) => {
   const sid = ensureSession(req, res);
-  const settings = store.getSettings(sid);
+  const plan = resolvePlan(sid);
+  const settings = applyPlanToSettings(store.getSettings(sid), plan);
 
   const instrumentId = String(req.body?.instrumentId || '');
   const timeframe = parseTimeframe(req.body?.timeframe) || settings.defaultTimeframe;
@@ -393,6 +415,15 @@ api.post('/analyze', async (req, res) => {
   if (!isAIConfigured()) {
     return fail(res, 503,
       'AI analysis is not available on this server. The operator has not configured an AI service key.');
+  }
+
+  const todaySignals = store.listSignalsSince(sid, startOfDay());
+  if (todaySignals.length >= plan.maxAnalysesPerDay) {
+    return fail(
+      res,
+      429,
+      `Free plan limit reached: ${plan.maxAnalysesPerDay} analyses per day. Pro and Max plans with stronger models are coming soon.`
+    );
   }
 
   try {
@@ -443,7 +474,7 @@ api.post('/analyze', async (req, res) => {
     });
 
     const ai = await requestAIAnalysis({
-      model: settings.aiModel,
+      model: planModelForRequest(sid, settings),
       temperature: settings.aiTemperature,
       userPrompt: prompt,
       marketPrice: quote.price,
@@ -454,7 +485,6 @@ api.post('/analyze', async (req, res) => {
 
     const quality = computeSignalQuality(analysis, ai.analysis);
 
-    const todaySignals = store.listSignalsSince(sid, startOfDay());
     const lastTracked = store
       .listTracked(sid)
       .filter((t) => t.instrumentId === instrument.id)
@@ -593,6 +623,7 @@ api.get('/signals/:id/live', async (req, res) => {
 /** Records that the user has chosen to follow a signal. */
 api.post('/tracked', (req, res) => {
   const sid = ensureSession(req, res);
+  const plan = resolvePlan(sid);
   const signalId = String(req.body?.signalId || '');
   const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 280) : undefined;
 
@@ -607,6 +638,15 @@ api.post('/tracked', (req, res) => {
   }
   if (signal.tracked) {
     return fail(res, 409, 'You are already following this signal.');
+  }
+
+  const activeCount = store.listActiveTracked(sid).length;
+  if (activeCount >= plan.maxActiveTracked) {
+    return fail(
+      res,
+      429,
+      `Free plan limit reached: follow up to ${plan.maxActiveTracked} active signals. Pro and Max are coming soon.`
+    );
   }
 
   res.json({ tracked: trackSignal(signal, note) });
@@ -708,13 +748,15 @@ api.get('/signals', (req, res) => {
 
 api.get('/stats', (req, res) => {
   const sid = ensureSession(req, res);
-  const settings = store.getSettings(sid);
+  const plan = resolvePlan(sid);
+  const settings = applyPlanToSettings(store.getSettings(sid), plan);
   const todaySignals = store.listSignalsSince(sid, startOfDay());
 
   res.json({
     stats: computeStats(sid),
     signalsToday: todaySignals.length,
-    maxSignalsPerDay: settings.maxSignalsPerDay,
+    maxSignalsPerDay: Math.min(settings.maxSignalsPerDay, plan.maxAnalysesPerDay),
+    plan: buildUserPlanView(sid, todaySignals.length),
   });
 });
 
@@ -739,7 +781,8 @@ api.post('/signals/evaluate', async (req, res) => {
  */
 api.post('/chat', async (req, res) => {
   const sid = ensureSession(req, res);
-  const settings = store.getSettings(sid);
+  const plan = resolvePlan(sid);
+  const settings = applyPlanToSettings(store.getSettings(sid), plan);
 
   const rawMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const instrumentId = req.body?.instrumentId ? String(req.body.instrumentId) : null;
@@ -764,6 +807,16 @@ api.post('/chat', async (req, res) => {
   if (!isAIConfigured()) {
     return fail(res, 503, 'Chat is not available: this server has no AI service configured.');
   }
+
+  const chatUsed = store.getChatUsageToday(sid);
+  if (chatUsed >= plan.maxChatMessagesPerDay) {
+    return fail(
+      res,
+      429,
+      `Free plan limit reached: ${plan.maxChatMessagesPerDay} chat messages per day. Pro and Max are coming soon.`
+    );
+  }
+  store.incrementChatUsage(sid);
 
   // Assemble live context. Failures here degrade the answer but must not
   // prevent the user from chatting.
@@ -823,7 +876,7 @@ api.post('/chat', async (req, res) => {
 
   try {
     const result = await streamChat({
-      model: settings.aiModel,
+      model: planModelForRequest(sid, settings),
       temperature: 0.6, // conversational, versus the analytical path's low temp
       systemPrompt: CHAT_SYSTEM_PROMPT + context,
       messages,

@@ -24,6 +24,7 @@ import {
   SidebarRail,
 } from './ui/sidebar';
 import { SymbolSearch } from './SymbolSearch';
+import type { UserPlanView } from '../services/api';
 import type { Instrument, ServerSettings, Timeframe } from '../types';
 
 interface AppSidebarProps {
@@ -37,6 +38,7 @@ interface AppSidebarProps {
   onOpenSettings: () => void;
   activeCount: number;
   signalsToday: number;
+  plan: UserPlanView | null;
 }
 
 const TIMEFRAMES: { label: string; value: Timeframe }[] = [
@@ -68,7 +70,11 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
   onOpenSettings,
   activeCount,
   signalsToday,
+  plan,
 }) => {
+  const analysisCap = plan?.maxAnalysesPerDay ?? settings.maxSignalsPerDay;
+  const trackCap = plan?.maxActiveTracked ?? 3;
+
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="flex items-center gap-2 px-3 py-3">
@@ -78,7 +84,9 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
           </div>
           <div className="flex flex-col truncate group-data-[collapsible=icon]:hidden">
             <span className="font-bold text-sm leading-tight">LURZ AI</span>
-            <span className="text-[10px] text-muted-foreground font-mono">Signal advisor</span>
+            <span className="text-[10px] text-muted-foreground font-mono">
+              {plan ? `${plan.name} · ${plan.aiModelLabel}` : 'Signal advisor'}
+            </span>
           </div>
         </div>
       </SidebarHeader>
@@ -187,18 +195,29 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
             <div className="p-2.5 rounded-lg bg-muted/50 border border-border space-y-2 group-data-[collapsible=icon]:hidden">
               <div className="flex justify-between items-center text-xs">
                 <span className="text-muted-foreground">Following</span>
-                <span className="font-bold font-mono">{activeCount}</span>
-              </div>
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-muted-foreground">Signals today</span>
                 <span
                   className={`font-bold font-mono ${
-                    signalsToday >= settings.maxSignalsPerDay ? 'text-amber-500' : ''
+                    activeCount >= trackCap ? 'text-amber-500' : ''
                   }`}
                 >
-                  {signalsToday}/{settings.maxSignalsPerDay}
+                  {activeCount}/{trackCap}
                 </span>
               </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Analyses today</span>
+                <span
+                  className={`font-bold font-mono ${
+                    signalsToday >= analysisCap ? 'text-amber-500' : ''
+                  }`}
+                >
+                  {signalsToday}/{analysisCap}
+                </span>
+              </div>
+              {plan?.id === 'free' && (
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  Free plan · Pro & Max models coming soon
+                </p>
+              )}
             </div>
           </SidebarGroupContent>
         </SidebarGroup>

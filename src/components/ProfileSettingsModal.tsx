@@ -438,12 +438,22 @@ export function ProfileSettingsModal({
                       id="max-signals"
                       type="number"
                       min={1}
-                      max={100}
+                      max={settings.maxSignalsPerDay}
                       step={1}
                       value={maxSignalsPerDay}
-                      onChange={(e) => setMaxSignalsPerDay(Number(e.target.value) || 25)}
+                      onChange={(e) =>
+                        setMaxSignalsPerDay(
+                          Math.min(
+                            Number(e.target.value) || 1,
+                            settings.maxSignalsPerDay
+                          )
+                        )
+                      }
                       className={`${inputClassName} font-mono`}
                     />
+                    <p className="text-[11px] text-muted-foreground">
+                      Free plan caps this at {settings.maxSignalsPerDay}/day. Pro & Max coming soon.
+                    </p>
                   </div>
 
                   <div className="flex items-center justify-between gap-4 rounded-xl border border-border/70 px-4 py-3">
