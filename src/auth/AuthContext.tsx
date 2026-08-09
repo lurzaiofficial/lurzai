@@ -81,9 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  /** Allows sign-in/up on `/` to reach `/app` before off-dashboard logout runs. */
+  /** Blocks leave-dashboard logout during the sign-in → /app handoff. */
   const enteringDashboardRef = useRef(false);
   const signingOutRef = useRef(false);
+  /** Previous path — logout only when leaving `/app`, not while logging in on `/`. */
+  const previousPathRef = useRef(location.pathname);
 
   useEffect(() => {
     clearLegacyLocalAuth();
@@ -98,7 +100,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // Ignore spurious clears while we are intentionally entering the desk.
+      if (event === 'SIGNED_OUT' && enteringDashboardRef.current) return;
       setUser(mapUser(session?.user));
       setIsReady(true);
     });
@@ -109,19 +113,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Session is only for the dashboard. Anywhere else (except password recovery)
-  // signs the user out and keeps them on the home page.
+  // Sign out when the user leaves the dashboard (not when they land on home
+  // mid-login — that race wiped fresh sessions).
   useEffect(() => {
+    const previous = previousPathRef.current;
+    previousPathRef.current = location.pathname;
+
     if (!isReady || !user) return;
-
-    if (isDashboardPath(location.pathname)) {
-      enteringDashboardRef.current = false;
-      return;
-    }
-
-    if (isAuthExemptPath(location.pathname)) return;
     if (enteringDashboardRef.current) return;
     if (signingOutRef.current) return;
+    if (isAuthExemptPath(location.pathname)) return;
+
+    const leftDashboard =
+      isDashboardPath(previous) && !isDashboardPath(location.pathname);
+
+    if (!leftDashboard) {
+      if (isDashboardPath(location.pathname)) {
+        enteringDashboardRef.current = false;
+      }
+      return;
+    }
 
     signingOutRef.current = true;
     void supabase.auth
@@ -130,6 +141,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Still clear local auth state if the network call fails.
       })
       .finally(() => {
+        // Don't wipe a login that started while signOut was in flight.
+        if (enteringDashboardRef.current) {
+          signingOutRef.current = false;
+          return;
+        }
         setUser(null);
         setAuthOpen(false);
         signingOutRef.current = false;
@@ -198,6 +214,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearAuthParam();
   }, [clearAuthParam]);
 
+  /** Establishes session state; the auth modal handles the success pause + /app navigation. */
+  const establishSession = useCallback(
+    (nextUser: AuthUser) => {
+      enteringDashboardRef.current = true;
+      setUser(nextUser);
+      clearAuthParam();
+    },
+    [clearAuthParam],
+  );
+
   const signIn = useCallback(
     async (email: string, password: string) => {
       const emailError = validateEmail(email);
@@ -210,16 +236,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (error) throw new Error(error.message);
-      if (!data.session) {
-        throw new Error('Sign in succeeded but no session was returned. Confirm your email if required.');
+      if (!data.session || !data.user) {
+        throw new Error(
+          'Sign in succeeded but no session was returned. Confirm your email if required.'
+        );
       }
 
-      enteringDashboardRef.current = true;
-      setUser(mapUser(data.user));
-      setAuthOpen(false);
-      clearAuthParam();
+      const mapped = mapUser(data.user);
+      if (!mapped) throw new Error('Could not load your account. Try again.');
+      establishSession(mapped);
     },
-    [clearAuthParam],
+    [establishSession],
   );
 
   const signUp = useCallback(
@@ -269,13 +296,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { status: 'confirm_email' };
       }
 
-      enteringDashboardRef.current = true;
-      setUser(mapped);
-      setAuthOpen(false);
-      clearAuthParam();
+      if (!mapped) throw new Error('Account created, but session is missing. Sign in to continue.');
+      establishSession(mapped);
       return { status: 'signed_in' };
     },
-    [clearAuthParam],
+    [establishSession],
   );
 
   const signOut = useCallback(async () => {

@@ -33,6 +33,7 @@ import {
   ApiError,
   analysisApi,
   marketApi,
+  planApi,
   searchApi,
   settingsApi,
   signalsApi,
@@ -40,7 +41,9 @@ import {
   statusApi,
   trackingApi,
   type StatsResponse,
+  type UserPlanView,
 } from './services/api';
+import { planLimitReachedMessage } from './components/PlanBadge';
 
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -108,6 +111,7 @@ export default function App() {
   const [signals, setSignals] = useState<SignalRecord[]>([]);
   const [tracked, setTracked] = useState<TrackedSignalView[]>([]);
   const [stats, setStats] = useState<StatsResponse | null>(null);
+  const [plan, setPlan] = useState<UserPlanView | null>(null);
 
   // ------------------------------------------------------------------ flags
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -148,6 +152,14 @@ export default function App() {
     }
   }, []);
 
+  const refreshPlan = useCallback(async () => {
+    try {
+      setPlan(await planApi.get());
+    } catch {
+      // Non-blocking — limits still enforced server-side.
+    }
+  }, []);
+
   const refreshHistory = useCallback(async () => {
     try {
       const [t, s, st] = await Promise.all([
@@ -158,6 +170,7 @@ export default function App() {
       setTracked(t);
       setSignals(s);
       setStats(st);
+      if (st.plan) setPlan(st.plan);
     } catch (err) {
       toast.error(`Could not load your history: ${errorMessage(err)}`);
     }
@@ -191,7 +204,8 @@ export default function App() {
     void bootstrap();
     void refreshStatus();
     void refreshHistory();
-  }, [bootstrap, refreshStatus, refreshHistory]);
+    void refreshPlan();
+  }, [bootstrap, refreshStatus, refreshHistory, refreshPlan]);
 
   // Periodic re-checks so a dropped source surfaces on its own.
   useEffect(() => {
@@ -415,14 +429,9 @@ export default function App() {
   const handleToggleFavourite = () => {
     if (!instrument) return;
     const exists = favourites.some((f) => f.id === instrument.id);
-    if (!exists) {
-      const favCap = stats?.plan?.maxFavourites ?? 10;
-      if (favourites.length >= favCap) {
-        toast.error(
-          `Free plan limit reached: ${favCap} favourites. Pro and Max are coming soon.`
-        );
-        return;
-      }
+    if (!exists && plan && favourites.length >= plan.maxFavourites) {
+      toast.error(planLimitReachedMessage(plan, 'favourites'));
+      return;
     }
     void persistFavourites(
       exists ? favourites.filter((f) => f.id !== instrument.id) : [...favourites, instrument]
@@ -443,13 +452,8 @@ export default function App() {
       toast.error('AI analysis is unavailable on this server.');
       return;
     }
-    const plan = stats?.plan;
-    const used = stats?.signalsToday ?? 0;
-    const cap = plan?.maxAnalysesPerDay ?? settings.maxSignalsPerDay;
-    if (used >= cap) {
-      toast.error(
-        `Free plan limit reached: ${cap} analyses per day. Pro and Max plans are coming soon.`
-      );
+    if (plan && plan.analysesUsedToday >= plan.maxAnalysesPerDay) {
+      toast.error(planLimitReachedMessage(plan, 'analyses'));
       return;
     }
     setIsAnalyseSetupOpen(true);
@@ -505,7 +509,11 @@ export default function App() {
       else toast.info(message);
 
       void signalsApi.list(50).then(setSignals).catch(() => {});
-      void statsApi.get().then(setStats).catch(() => {});
+      void statsApi.get().then((st) => {
+        setStats(st);
+        if (st.plan) setPlan(st.plan);
+      }).catch(() => {});
+      void refreshPlan();
     } catch (err) {
       const message = errorMessage(err);
       setAnalysisError(message);
@@ -521,6 +529,11 @@ export default function App() {
 
   const handleTrack = async () => {
     if (!signal) return;
+    const active = tracked.filter((t) => t.status === 'ACTIVE').length;
+    if (plan && active >= plan.maxActiveTracked) {
+      toast.error(planLimitReachedMessage(plan, 'tracked'));
+      return;
+    }
     setIsTracking(true);
     try {
       await trackingApi.track(signal.id);
@@ -600,7 +613,7 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           activeCount={tracked.filter((t) => t.status === 'ACTIVE').length}
           signalsToday={stats?.signalsToday ?? 0}
-          plan={stats?.plan ?? null}
+          plan={plan}
         />
 
         <SidebarInset>
@@ -613,6 +626,7 @@ export default function App() {
             streamDetail={streamDetail}
             isDataStale={isDataStale}
             settings={settings}
+            plan={plan}
             onSaveSettings={async (patch) => {
               setSettings(await settingsApi.update(patch));
             }}
@@ -672,6 +686,7 @@ export default function App() {
                       settings={settings}
                       analysisError={analysisError}
                       aiAvailable={aiAvailable}
+                      plan={plan}
                     />
                     <SignalStatsPanel data={stats} />
                   </div>
@@ -700,7 +715,7 @@ export default function App() {
           onClose={() => setIsSettingsOpen(false)}
           settings={settings}
           providers={connection?.providers ?? []}
-          plan={stats?.plan ?? null}
+          plan={plan}
           onSave={handleSaveSettings}
         />
 
@@ -718,6 +733,8 @@ export default function App() {
           instrument={instrument}
           timeframe={timeframe}
           aiAvailable={aiAvailable}
+          plan={plan}
+          onPlanUsageChange={() => void refreshPlan()}
         />
       </div>
     </SidebarProvider>

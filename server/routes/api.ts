@@ -422,7 +422,11 @@ api.post('/analyze', async (req, res) => {
     return fail(
       res,
       429,
-      `Free plan limit reached: ${plan.maxAnalysesPerDay} analyses per day. Pro and Max plans with stronger models are coming soon.`
+      `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${
+        plan.id === 'free'
+          ? ' Pro and Max plans with stronger models are coming soon.'
+          : ''
+      }`
     );
   }
 
@@ -645,7 +649,9 @@ api.post('/tracked', (req, res) => {
     return fail(
       res,
       429,
-      `Free plan limit reached: follow up to ${plan.maxActiveTracked} active signals. Pro and Max are coming soon.`
+      `${plan.name} plan limit reached: follow up to ${plan.maxActiveTracked} active signals.${
+        plan.id === 'free' ? ' Pro and Max are coming soon.' : ''
+      }`
     );
   }
 
@@ -813,7 +819,9 @@ api.post('/chat', async (req, res) => {
     return fail(
       res,
       429,
-      `Free plan limit reached: ${plan.maxChatMessagesPerDay} chat messages per day. Pro and Max are coming soon.`
+      `${plan.name} plan limit reached: ${plan.maxChatMessagesPerDay} chat messages per day.${
+        plan.id === 'free' ? ' Pro and Max are coming soon.' : ''
+      }`
     );
   }
   store.incrementChatUsage(sid);

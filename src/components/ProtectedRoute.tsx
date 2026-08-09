@@ -1,32 +1,24 @@
-import { useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '@/auth/AuthContext';
-import { supabase } from '@/lib/supabase';
 
 /**
- * Dashboard gate. Unauthenticated visitors are signed out (clears stale
- * sessions) and sent to the home page — they must sign in again to open `/app`.
+ * Dashboard gate. Unauthenticated visitors go home.
+ * Stale-session cleanup is handled by AuthContext when leaving `/app`.
  */
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isReady } = useAuth();
 
-  useEffect(() => {
-    if (!isReady || user) return;
-    void supabase.auth.signOut().catch(() => {
-      // ignore — destination redirect still happens
-    });
-  }, [isReady, user]);
-
   if (!isReady) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground text-sm">
-        Loading…
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+        <p className="text-sm">Loading your desk…</p>
       </div>
     );
   }
 
   if (!user) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/?auth=signin" replace />;
   }
 
   return <>{children}</>;

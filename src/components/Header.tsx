@@ -18,6 +18,8 @@ import {
 } from './ui/dropdown-menu';
 import { SidebarTrigger } from './ui/sidebar';
 import { ConnectionStatusBar } from './ConnectionStatusBar';
+import { PlanBadge } from './PlanBadge';
+import type { UserPlanView } from '../services/api';
 import type { ConnectionState, ConnectionStatus, ServerSettings } from '../types';
 
 interface HeaderProps {
@@ -29,6 +31,7 @@ interface HeaderProps {
   streamDetail: string;
   isDataStale: boolean;
   settings: ServerSettings;
+  plan: UserPlanView | null;
   onSaveSettings: (patch: Partial<ServerSettings>) => Promise<void>;
 }
 
@@ -55,6 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
   streamDetail,
   isDataStale,
   settings,
+  plan,
   onSaveSettings,
 }) => {
   const { user, signOut } = useAuth();
@@ -121,6 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
             </p>
           )}
         </div>
+        <PlanBadge plan={plan} showUsage={!compactHeader} className="hidden md:flex" />
       </div>
 
       <ConnectionStatusBar
@@ -131,6 +136,7 @@ export const Header: React.FC<HeaderProps> = ({
       />
 
       <div className="flex items-center gap-2 sm:gap-3">
+        <PlanBadge plan={plan} compact className="md:hidden" />
         <Button
           variant="outline"
           size="icon"
@@ -168,10 +174,18 @@ export const Header: React.FC<HeaderProps> = ({
                   {initials || <UserRound className="h-4 w-4" />}
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel className="space-y-0.5 font-normal">
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel className="space-y-1.5 font-normal">
                   <p className="truncate text-sm font-medium text-foreground">{user.name}</p>
                   <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                  {plan && (
+                    <p className="text-[11px] font-mono text-foreground/80 pt-1">
+                      {plan.name} plan · {plan.aiModelLabel}
+                      <span className="block text-muted-foreground normal-case tracking-normal mt-0.5">
+                        {plan.analysesUsedToday}/{plan.maxAnalysesPerDay} analyses today
+                      </span>
+                    </p>
+                  )}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => setProfileOpen(true)}>
@@ -197,6 +211,7 @@ export const Header: React.FC<HeaderProps> = ({
               theme={theme}
               onToggleTheme={onToggleTheme}
               settings={settings}
+              plan={plan}
               onSaveSettings={onSaveSettings}
             />
           </>

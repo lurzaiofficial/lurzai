@@ -23,6 +23,7 @@ import type {
   ServerSettings,
   SignalRecord,
 } from '../types';
+import type { UserPlanView } from '../services/api';
 import {
   tradeActionFromVerdict,
   tradeActionLabel,
@@ -30,6 +31,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
+import { PlanBadge } from './PlanBadge';
 
 export type AnalysisProgressStage =
   | 'idle'
@@ -53,6 +55,7 @@ interface SignalCardProps {
   settings: ServerSettings;
   analysisError: string | null;
   aiAvailable: boolean;
+  plan: UserPlanView | null;
 }
 
 const REGIME_LABEL: Record<string, string> = {
@@ -141,8 +144,12 @@ export const SignalCard: React.FC<SignalCardProps> = ({
   settings,
   analysisError,
   aiAvailable,
+  plan,
 }) => {
   const ai = signal?.ai;
+  const analysisBlocked = Boolean(
+    plan && plan.analysesUsedToday >= plan.maxAnalysesPerDay
+  );
   /**
    * Prefer the continuously re-evaluated advice over the snapshot taken when
    * the signal was generated. The plan does not move, but whether it is still
@@ -183,7 +190,7 @@ export const SignalCard: React.FC<SignalCardProps> = ({
     <Card className="border-border bg-card text-card-foreground shadow-sm relative overflow-hidden">
       <div className={`h-1.5 w-full ${verdict ? verdict.accent : 'bg-muted-foreground/30'}`} />
 
-      <CardHeader className="p-5 pb-4 border-b border-border flex flex-row items-center justify-between">
+      <CardHeader className="p-5 pb-4 border-b border-border flex flex-row items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <Cpu className="h-5 w-5 text-foreground" />
@@ -193,6 +200,7 @@ export const SignalCard: React.FC<SignalCardProps> = ({
             Indicators calculated locally · AI interprets · you decide
           </p>
         </div>
+        <PlanBadge plan={plan} compact />
       </CardHeader>
 
       <CardContent className="p-5 space-y-5">
@@ -634,16 +642,34 @@ export const SignalCard: React.FC<SignalCardProps> = ({
 
         {/* Actions */}
         <div className="pt-2 border-t border-border space-y-3">
+          {plan && (
+            <p className="text-[11px] text-muted-foreground font-mono">
+              {plan.name} plan controls Analyse · {plan.analysesUsedToday}/
+              {plan.maxAnalysesPerDay} used today · {plan.aiModelLabel}
+            </p>
+          )}
+          {analysisBlocked && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-foreground/90">
+              Daily Analyse limit reached on your {plan?.name ?? 'Free'} plan. Limits reset tomorrow.
+              Pro and Max are coming soon for higher caps and stronger models.
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Button
               size="lg"
               onClick={onAnalyze}
-              disabled={isAnalyzing || !instrument || !aiAvailable}
+              disabled={isAnalyzing || !instrument || !aiAvailable || analysisBlocked}
               className="w-full font-bold gap-2 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               <Activity className={`h-4 w-4 shrink-0 ${isAnalyzing ? 'animate-spin' : ''}`} />
               <span className="truncate">
-                {isAnalyzing ? 'Analysing…' : signal ? 'ANALYSE AGAIN' : 'ANALYSE MARKET'}
+                {isAnalyzing
+                  ? 'Analysing…'
+                  : analysisBlocked
+                    ? 'LIMIT REACHED'
+                    : signal
+                      ? 'ANALYSE AGAIN'
+                      : 'ANALYSE MARKET'}
               </span>
             </Button>
 

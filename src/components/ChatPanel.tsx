@@ -20,7 +20,9 @@ import {
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { streamChat, ChatStreamError } from '../services/chat';
+import type { UserPlanView } from '../services/api';
 import type { Instrument, Timeframe } from '../types';
+import { planLimitReachedMessage } from './PlanBadge';
 
 interface ChatMessage {
   id: string;
@@ -33,6 +35,8 @@ interface ChatPanelProps {
   instrument: Instrument | null;
   timeframe: Timeframe;
   aiAvailable: boolean;
+  plan: UserPlanView | null;
+  onPlanUsageChange?: () => void;
 }
 
 const STORAGE_KEY = 'tradepilot_chat';
@@ -129,7 +133,14 @@ function inline(text: string): React.ReactNode {
   });
 }
 
-export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiAvailable }) => {
+export const ChatPanel: React.FC<ChatPanelProps> = ({
+  instrument,
+  timeframe,
+  aiAvailable,
+  plan,
+  onPlanUsageChange,
+}) => {
+  const chatBlocked = Boolean(plan && plan.chatUsedToday >= plan.maxChatMessagesPerDay);
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -185,6 +196,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
       const trimmed = text.trim();
       if (!trimmed || isStreaming) return;
 
+      if (plan && plan.chatUsedToday >= plan.maxChatMessagesPerDay) {
+        const assistantId = `a_limit_${Date.now()}`;
+        setMessages((prev) => [
+          ...prev,
+          { id: `u_${Date.now()}`, role: 'user', content: trimmed },
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: planLimitReachedMessage(plan, 'chat'),
+            error: true,
+          },
+        ]);
+        setInput('');
+        return;
+      }
+
       const userMessage: ChatMessage = {
         id: `u_${Date.now()}`,
         role: 'user',
@@ -222,6 +249,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
             );
           },
         });
+        onPlanUsageChange?.();
       } catch (err) {
         const message =
           err instanceof ChatStreamError ? err.message : 'Something went wrong. Please try again.';
@@ -232,6 +260,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
               : m
           )
         );
+        onPlanUsageChange?.();
       } finally {
         setIsStreaming(false);
         abortRef.current = null;
@@ -243,7 +272,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
         );
       }
     },
-    [messages, instrument?.id, timeframe, isStreaming]
+    [messages, instrument?.id, timeframe, isStreaming, plan, onPlanUsageChange]
   );
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -307,7 +336,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
           <div className="min-w-0">
             <p className="text-sm font-bold leading-tight truncate">Ask AI</p>
             <p className="text-[10px] text-muted-foreground truncate">
-              {instrument ? `Discussing ${instrument.displaySymbol} · ${timeframe}` : 'No market selected'}
+              {plan
+                ? `${plan.name} · ${plan.chatUsedToday}/${plan.maxChatMessagesPerDay} chat today`
+                : instrument
+                  ? `Discussing ${instrument.displaySymbol} · ${timeframe}`
+                  : 'No market selected'}
             </p>
           </div>
         </div>
@@ -380,7 +413,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
                             key={s}
                             type="button"
                             onClick={() => void send(s)}
-                            disabled={!aiAvailable}
+                            disabled={!aiAvailable || chatBlocked}
                             className="text-xs text-left px-3 py-2 rounded-lg border border-border bg-muted/40 hover:bg-accent hover:border-primary/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {s}
@@ -460,6 +493,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
             <span>The AI service is not configured on this server.</span>
           </div>
         )}
+        {aiAvailable && chatBlocked && plan && (
+          <div className="flex items-start gap-1.5 text-[11px] text-amber-500">
+            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+            <span>{planLimitReachedMessage(plan, 'chat')}</span>
+          </div>
+        )}
 
         <div className="flex items-end gap-2">
           <textarea
@@ -467,9 +506,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={!aiAvailable}
+            disabled={!aiAvailable || chatBlocked}
             rows={1}
-            placeholder={aiAvailable ? 'Ask anything…' : 'Chat unavailable'}
+            placeholder={
+              !aiAvailable
+                ? 'Chat unavailable'
+                : chatBlocked
+                  ? 'Daily chat limit reached'
+                  : 'Ask anything…'
+            }
             className="flex-1 min-h-9 max-h-32 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 scrollbar-subtle"
             // Grow with content up to the max height.
             onInput={(e) => {
@@ -494,7 +539,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ instrument, timeframe, aiA
             <Button
               type="submit"
               size="icon"
-              disabled={!input.trim() || !aiAvailable}
+              disabled={!input.trim() || !aiAvailable || chatBlocked}
               className="h-9 w-9 shrink-0 bg-primary text-primary-foreground disabled:opacity-40"
               title="Send"
             >

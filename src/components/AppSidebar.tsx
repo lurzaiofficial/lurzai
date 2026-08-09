@@ -213,10 +213,19 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
                   {signalsToday}/{analysisCap}
                 </span>
               </div>
-              {plan?.id === 'free' && (
-                <p className="text-[10px] text-muted-foreground leading-snug">
-                  Free plan · Pro & Max models coming soon
-                </p>
+              {plan && (
+                <div className="pt-1 border-t border-border space-y-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-foreground/80">
+                    {plan.name} plan
+                  </p>
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    {plan.aiModelLabel} controls Analyse & chat.
+                    {plan.id === 'free' ? ' Pro & Max coming soon.' : ''}
+                  </p>
+                  <p className="text-[10px] font-mono text-muted-foreground">
+                    Chat {plan.chatUsedToday}/{plan.maxChatMessagesPerDay} today
+                  </p>
+                </div>
               )}
             </div>
           </SidebarGroupContent>

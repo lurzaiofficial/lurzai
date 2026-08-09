@@ -33,7 +33,9 @@ import {
   saveProfilePrefs,
   type ProfileLocalPrefs,
 } from '@/lib/profilePrefs';
+import type { UserPlanView } from '@/services/api';
 import type { ServerSettings, Timeframe } from '@/types';
+import { PlanBadge } from '@/components/PlanBadge';
 
 type ProfileSettingsModalProps = {
   open: boolean;
@@ -41,6 +43,7 @@ type ProfileSettingsModalProps = {
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
   settings: ServerSettings;
+  plan: UserPlanView | null;
   onSaveSettings: (patch: Partial<ServerSettings>) => Promise<void>;
 };
 
@@ -65,6 +68,7 @@ export function ProfileSettingsModal({
   theme,
   onToggleTheme,
   settings,
+  plan,
   onSaveSettings,
 }: ProfileSettingsModalProps) {
   const { user, updateProfile, updatePassword, signOut } = useAuth();
@@ -207,6 +211,9 @@ export function ProfileSettingsModal({
               <DialogDescription className="truncate text-sm text-muted-foreground">
                 {user?.email}
               </DialogDescription>
+              <div className="pt-1">
+                <PlanBadge plan={plan} showUsage />
+              </div>
             </div>
           </div>
         </DialogHeader>
@@ -452,7 +459,9 @@ export function ProfileSettingsModal({
                       className={`${inputClassName} font-mono`}
                     />
                     <p className="text-[11px] text-muted-foreground">
-                      Free plan caps this at {settings.maxSignalsPerDay}/day. Pro & Max coming soon.
+                      {(plan?.name ?? 'Free')} plan caps this at{' '}
+                      {plan?.maxAnalysesPerDay ?? settings.maxSignalsPerDay}/day.
+                      {plan?.id === 'free' ? ' Pro & Max coming soon.' : ''}
                     </p>
                   </div>
 
