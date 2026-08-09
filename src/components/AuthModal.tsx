@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useAuth, type AuthMode } from '@/auth/AuthContext';
-import { MIN_PASSWORD_LENGTH } from '@/auth/storage';
+import { MIN_PASSWORD_LENGTH } from '@/auth/types';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -35,11 +35,13 @@ export function AuthModal() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
   useEffect(() => {
     if (!authOpen) return;
     setError(null);
+    setInfo(null);
     setPassword('');
     setConfirmPassword('');
   }, [authOpen, authMode]);
@@ -47,11 +49,13 @@ export function AuthModal() {
   const handleModeChange = (value: string) => {
     setAuthMode(value as AuthMode);
     setError(null);
+    setInfo(null);
   };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
+    setInfo(null);
     setPending(true);
     try {
       if (authMode === 'signin') {
@@ -60,7 +64,14 @@ export function AuthModal() {
         if (password !== confirmPassword) {
           throw new Error('Passwords do not match.');
         }
-        await signUp(name, email, password);
+        const result = await signUp(name, email, password);
+        if (result.status === 'confirm_email') {
+          setInfo(
+            'Account created. Check your email for a confirmation link, then sign in.',
+          );
+          setPassword('');
+          setConfirmPassword('');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
@@ -194,6 +205,12 @@ export function AuthModal() {
               {error && (
                 <p className="text-sm text-destructive" role="alert">
                   {error}
+                </p>
+              )}
+
+              {info && (
+                <p className="text-sm text-foreground" role="status">
+                  {info}
                 </p>
               )}
             </form>

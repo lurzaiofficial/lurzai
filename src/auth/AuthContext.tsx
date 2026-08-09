@@ -8,13 +8,14 @@ import {
   type ReactNode,
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import type { User } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
 import {
-  clearSession,
-  getSession,
-  signIn as storageSignIn,
-  signUp as storageSignUp,
+  validateEmail,
+  validatePassword,
   type AuthUser,
-} from './storage';
+  type SignUpResult,
+} from './types';
 
 export type AuthMode = 'signin' | 'signup';
 
@@ -27,11 +28,38 @@ type AuthContextValue = {
   closeAuth: () => void;
   setAuthMode: (mode: AuthMode) => void;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (name: string, email: string, password: string) => Promise<void>;
-  signOut: () => void;
+  signUp: (name: string, email: string, password: string) => Promise<SignUpResult>;
+  signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+const LEGACY_USERS_KEY = 'lurz_auth_users_v1';
+const LEGACY_SESSION_KEY = 'lurz_auth_session_v1';
+
+function mapUser(user: User | null | undefined): AuthUser | null {
+  if (!user?.email) return null;
+  const meta = user.user_metadata ?? {};
+  const name =
+    (typeof meta.full_name === 'string' && meta.full_name.trim()) ||
+    (typeof meta.name === 'string' && meta.name.trim()) ||
+    user.email.split('@')[0] ||
+    'Trader';
+  return {
+    id: user.id,
+    email: user.email,
+    name,
+  };
+}
+
+function clearLegacyLocalAuth(): void {
+  try {
+    localStorage.removeItem(LEGACY_USERS_KEY);
+    localStorage.removeItem(LEGACY_SESSION_KEY);
+  } catch {
+    // ignore storage access errors
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -42,8 +70,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    setUser(getSession());
-    setIsReady(true);
+    clearLegacyLocalAuth();
+
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setUser(mapUser(data.session?.user));
+      setIsReady(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(mapUser(session?.user));
+      setIsReady(true);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   // Deep-link / protected-route handoff: /?auth=signin|signup
@@ -103,18 +150,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearAuthParam();
   }, [clearAuthParam]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const session = await storageSignIn({ email, password });
-    setUser(session);
-    setAuthOpen(false);
-    clearAuthParam();
-    navigate('/app');
-  }, [clearAuthParam, navigate]);
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const emailError = validateEmail(email);
+      if (emailError) throw new Error(emailError);
+      if (!password) throw new Error('Password is required.');
 
-  const signUp = useCallback(
-    async (name: string, email: string, password: string) => {
-      const session = await storageSignUp({ name, email, password });
-      setUser(session);
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      });
+
+      if (error) throw new Error(error.message);
+      if (!data.session) {
+        throw new Error('Sign in succeeded but no session was returned. Confirm your email if required.');
+      }
+
+      setUser(mapUser(data.user));
       setAuthOpen(false);
       clearAuthParam();
       navigate('/app');
@@ -122,8 +174,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [clearAuthParam, navigate],
   );
 
-  const signOut = useCallback(() => {
-    clearSession();
+  const signUp = useCallback(
+    async (name: string, email: string, password: string): Promise<SignUpResult> => {
+      const trimmedName = name.trim();
+      if (!trimmedName) throw new Error('Name is required.');
+
+      const emailError = validateEmail(email);
+      if (emailError) throw new Error(emailError);
+
+      const passwordError = validatePassword(password);
+      if (passwordError) throw new Error(passwordError);
+
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password,
+        options: {
+          data: {
+            full_name: trimmedName,
+            name: trimmedName,
+          },
+          emailRedirectTo: `${window.location.origin}/app`,
+        },
+      });
+
+      if (error) throw new Error(error.message);
+
+      // When email confirmation is required, Supabase returns a user without a session.
+      if (!data.session) {
+        return { status: 'confirm_email' };
+      }
+
+      setUser(mapUser(data.user));
+      setAuthOpen(false);
+      clearAuthParam();
+      navigate('/app');
+      return { status: 'signed_in' };
+    },
+    [clearAuthParam, navigate],
+  );
+
+  const signOut = useCallback(async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) throw new Error(error.message);
     setUser(null);
     navigate('/');
   }, [navigate]);
