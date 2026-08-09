@@ -1,5 +1,5 @@
 /**
- * Vercel serverless entry — bundled to `api/index.js` at build time.
+ * Vercel serverless entry — bundled to `api/index.cjs` at build time.
  *
  * Bundling avoids Node ESM resolution failures for extensionless relative
  * imports under `"type": "module"` on Vercel.
