@@ -9,6 +9,7 @@
  */
 
 import { logger } from './logger';
+import { resolveAppUrl } from './appUrl';
 import { extractJson, validateAIAnalysis } from '../../shared/analysis/aiSchema';
 import type {
   AIAnalysis,
@@ -235,7 +236,7 @@ export async function requestAIAnalysis(params: {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
+        'HTTP-Referer': resolveAppUrl(),
         'X-Title': 'LURZ AI',
         'Content-Type': 'application/json',
       },

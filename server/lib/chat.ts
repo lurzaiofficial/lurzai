@@ -13,6 +13,7 @@
  */
 
 import { logger } from './logger';
+import { resolveAppUrl } from './appUrl';
 import type { AssetClass, MarketAnalysis, Quote, SignalRecord } from '../../shared/types';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -158,7 +159,7 @@ export async function streamChat(params: {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
+        'HTTP-Referer': resolveAppUrl(),
         'X-Title': 'LURZ AI',
         'Content-Type': 'application/json',
       },

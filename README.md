@@ -17,11 +17,45 @@ LURZ analyses crypto, stocks, forex, and commodities in one workspace. You get A
 ## Stack
 
 - React 19 + Vite + TypeScript
-- Express server (`server.ts`)
+- Express API (`server.ts` locally; Vercel serverless via `api/index.ts`)
+- Supabase Auth (browser client)
 - Tailwind CSS
 - OpenRouter for AI analysis
 - Public crypto market data (Binance and other exchanges)
 - Twelve Data for non-crypto markets (optional)
+
+## Production (Vercel)
+
+Production domain: [https://lurzai.vercel.app](https://lurzai.vercel.app)
+
+Set these in **Vercel → Project → Settings → Environment Variables** (Production + Preview):
+
+| Variable | Where used |
+| --- | --- |
+| `VITE_SUPABASE_URL` | Browser (Vite) |
+| `VITE_SUPABASE_ANON_KEY` | Browser (Vite) |
+| `OPENROUTER_API_KEY` | Server / API |
+| `APP_URL` | Server (use `https://lurzai.vercel.app`) |
+| `TWELVEDATA_API_KEY` | Server (optional) |
+| `RESEND_API_KEY` / `RESEND_FROM` | Server (optional) |
+
+`vercel.json` rewrites SPA routes (`/app`, `/reset-password`, …) to `index.html` and `/api/*` to the Express serverless function.
+
+### Supabase URL Configuration (required for auth)
+
+In Supabase → **Authentication** → **URL Configuration**:
+
+- **Site URL:** `https://lurzai.vercel.app`
+- **Redirect URLs** (keep localhost for local dev):
+  - `http://localhost:3000/**`
+  - `http://localhost:3000/reset-password`
+  - `http://localhost:3000/app`
+  - `https://lurzai.vercel.app/**`
+  - `https://lurzai.vercel.app/reset-password`
+  - `https://lurzai.vercel.app/app`
+  - Optional previews: `https://*-lurz-ai.vercel.app/**`
+
+Password reset and email confirmation redirects use `window.location.origin` in the client, so they work on both localhost and Vercel once the allow list includes each origin.
 
 ## Prerequisites
 

@@ -135,13 +135,13 @@ api.post('/email/welcome', async (req, res) => {
 
   try {
     const result = await sendWelcomeEmail({ to: email, name, userId });
-    if (!result.ok) {
-      if (result.skipped) {
-        return res.status(503).json({ error: result.error, skipped: true });
-      }
-      return fail(res, 502, 'Failed to send welcome email.', result.error);
+    if (result.ok) {
+      return res.json({ ok: true, id: result.id });
     }
-    return res.json({ ok: true, id: result.id });
+    if (result.skipped) {
+      return res.status(503).json({ error: result.error, skipped: true });
+    }
+    return fail(res, 502, 'Failed to send welcome email.', result.error);
   } catch (err) {
     return handleError(res, err, 'Failed to send welcome email.');
   }

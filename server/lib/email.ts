@@ -8,6 +8,7 @@
 
 import { Resend } from 'resend';
 import { logger } from './logger';
+import { resolveAppUrl } from './appUrl';
 
 const DEFAULT_FROM = 'LURZ AI <onboarding@resend.dev>';
 
@@ -41,7 +42,7 @@ export async function sendWelcomeEmail(params: {
 
   const to = params.to.trim().toLowerCase();
   const name = params.name.trim() || 'Trader';
-  const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+  const appUrl = resolveAppUrl();
   const idempotencyKey = `welcome-email/${params.userId || to}`;
 
   const { data, error } = await resend.emails.send(
