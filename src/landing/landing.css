@@ -1,0 +1,143 @@
+/* Landing theme (scoped). App tokens in src/index.css share the same palette. */
+.landing-root {
+  --background: oklch(0.985 0.002 90);
+  --foreground: oklch(0.12 0.01 60);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.12 0.01 60);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.12 0.01 60);
+  --primary: oklch(0.12 0.01 60);
+  --primary-foreground: oklch(0.985 0.002 90);
+  --secondary: oklch(0.96 0.005 90);
+  --secondary-foreground: oklch(0.12 0.01 60);
+  --muted: oklch(0.94 0.005 90);
+  --muted-foreground: oklch(0.45 0.02 60);
+  --accent: oklch(0.92 0.01 90);
+  --accent-foreground: oklch(0.12 0.01 60);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: oklch(0.88 0.01 90);
+  --input: oklch(0.92 0.01 90);
+  --ring: oklch(0.12 0.01 60);
+  --radius: 0.25rem;
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-landing-sans: 'Instrument Sans', system-ui, sans-serif;
+  --font-landing-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-landing-sans);
+  min-height: 100vh;
+}
+
+.landing-root .font-display {
+  font-family: var(--font-display);
+}
+
+.landing-root .font-mono {
+  font-family: var(--font-landing-mono);
+}
+
+.landing-root .text-stroke {
+  -webkit-text-stroke: 1.5px currentColor;
+  -webkit-text-fill-color: transparent;
+}
+
+.landing-root .marquee {
+  animation: landing-marquee 30s linear infinite;
+}
+
+.landing-root .marquee-reverse {
+  animation: landing-marquee-reverse 25s linear infinite;
+}
+
+@keyframes landing-marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes landing-marquee-reverse {
+  0% { transform: translateX(-50%); }
+  100% { transform: translateX(0); }
+}
+
+.landing-root .animate-char-in {
+  animation: landing-char-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  opacity: 0;
+  filter: blur(40px);
+  transform: translateY(100%);
+}
+
+@keyframes landing-char-in {
+  0% {
+    opacity: 0;
+    filter: blur(40px);
+    transform: translateY(100%);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+.landing-root .noise-overlay {
+  position: relative;
+}
+
+.landing-root .noise-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.03;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.landing-root .code-line-reveal {
+  opacity: 0;
+  transform: translateX(-8px);
+  animation: landing-line-reveal 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes landing-line-reveal {
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.landing-root .code-char-reveal {
+  opacity: 0;
+  filter: blur(8px);
+  animation: landing-char-reveal 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes landing-char-reveal {
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.landing-root .dev-code-line {
+  opacity: 0;
+  transform: translateX(-8px);
+  animation: landing-line-reveal 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.landing-root .dev-code-char {
+  opacity: 0;
+  filter: blur(8px);
+  animation: landing-char-reveal 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes landing-progress {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+
+.landing-root .landing-progress-bar {
+  animation: landing-progress 5s linear forwards;
+}

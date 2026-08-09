@@ -1,0 +1,6 @@
+{
+  "name": "LURZ AI",
+  "description": "AI-powered crypto trading assistant with Binance integration, technical analysis, OpenRouter AI signals, and paper/live trading modes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
