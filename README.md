@@ -96,11 +96,11 @@ Copy from [`.env.example`](.env.example):
 | `LOG_LEVEL` | No | `debug` \| `info` \| `warn` \| `error` |
 | `DATA_DIR` | No | JSON datastore directory (default `./.data`) |
 | `OPENROUTER_API_KEY` | Yes (for signals) | Operator key for AI analysis; without it, live prices and indicators still work but signal generation is disabled |
-| `APP_URL` | No | App URL sent to OpenRouter for attribution (default `http://localhost:3000`) |
+| `APP_URL` | No | Public origin for OpenRouter attribution and email links. Local default `http://localhost:3000`; on Vercel set `https://lurzai.vercel.app` (else falls back to `https://$VERCEL_URL`) |
 | `TWELVEDATA_API_KEY` | No | Enables stocks, forex, commodities, indices, and ETFs; crypto works without it |
 | `BINANCE_BASE_URL` | No | Override Binance REST host if blocked in your region |
-| `VITE_SUPABASE_URL` | Yes (for auth) | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Yes (for auth) | Supabase anon/publishable key |
+| `VITE_SUPABASE_URL` | Yes (for auth) | Supabase project URL (same name in Vercel) |
+| `VITE_SUPABASE_ANON_KEY` | Yes (for auth) | Supabase anon/publishable key (same name in Vercel) |
 | `RESEND_API_KEY` | No | Server-side Resend key for app welcome emails |
 | `RESEND_FROM` | No | From address for app mail (default `LURZ AI <onboarding@resend.dev>`) |
 
@@ -123,7 +123,7 @@ Sign-in, sign-up, and forgot-password still go through **Supabase Auth**. Resend
    - **Username:** `resend`
    - **Password:** your Resend API key (same value as `RESEND_API_KEY`)
    - **Sender email / name:** a verified Resend domain address
-3. Keep Site URL and Redirect URLs aligned with your Vercel domain (and `/reset-password` for recovery).
+3. Keep Site URL and Redirect URLs aligned with production + localhost (see [Production (Vercel)](#production-vercel) above).
 
 ## Scripts
 

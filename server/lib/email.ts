@@ -14,7 +14,8 @@ const DEFAULT_FROM = 'LURZ AI <onboarding@resend.dev>';
 
 export type SendEmailResult =
   | { ok: true; id: string }
-  | { ok: false; skipped?: boolean; error: string };
+  | { ok: false; skipped: true; error: string }
+  | { ok: false; skipped: false; error: string };
 
 function getResendClient(): Resend | null {
   const apiKey = process.env.RESEND_API_KEY?.trim();
@@ -69,7 +70,7 @@ export async function sendWelcomeEmail(params: {
 
   if (error) {
     logger.error('email: welcome send failed', { message: error.message, to });
-    return { ok: false, error: error.message };
+    return { ok: false, skipped: false, error: error.message };
   }
 
   logger.info('email: welcome sent', { id: data?.id, to });

@@ -135,7 +135,7 @@ api.post('/email/welcome', async (req, res) => {
 
   try {
     const result = await sendWelcomeEmail({ to: email, name, userId });
-    if (result.ok) {
+    if (result.ok === true) {
       return res.json({ ok: true, id: result.id });
     }
     if (result.skipped) {
