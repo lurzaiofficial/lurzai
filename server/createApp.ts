@@ -12,6 +12,11 @@ import { logger } from './lib/logger';
 import { store } from './lib/store';
 
 export function createApp() {
+  // On Vercel the deployment filesystem is read-only; persist under /tmp.
+  if (process.env.VERCEL && !process.env.DATA_DIR) {
+    process.env.DATA_DIR = '/tmp/lurz-data';
+  }
+
   store.load();
 
   const app = express();
