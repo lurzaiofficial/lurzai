@@ -1,4 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useAuth, type AuthMode } from '@/auth/AuthContext';
 import { MIN_PASSWORD_LENGTH } from '@/auth/types';
 import { Button } from '@/components/ui/button';
@@ -20,6 +23,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
+type AuthView = 'auth' | 'forgot';
+
+const inputClassName =
+  'h-11 rounded-xl border-border/80 bg-background px-3.5 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:border-foreground/30 focus-visible:ring-foreground/15';
+
 export function AuthModal() {
   const {
     authOpen,
@@ -28,8 +36,11 @@ export function AuthModal() {
     setAuthMode,
     signIn,
     signUp,
+    resetPassword,
   } = useAuth();
+  const navigate = useNavigate();
 
+  const [view, setView] = useState<AuthView>('auth');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -39,7 +50,10 @@ export function AuthModal() {
   const [pending, setPending] = useState(false);
 
   useEffect(() => {
-    if (!authOpen) return;
+    if (!authOpen) {
+      setView('auth');
+      return;
+    }
     setError(null);
     setInfo(null);
     setPassword('');
@@ -48,8 +62,14 @@ export function AuthModal() {
 
   const handleModeChange = (value: string) => {
     setAuthMode(value as AuthMode);
+    setView('auth');
     setError(null);
     setInfo(null);
+  };
+
+  const handleClose = () => {
+    if (pending) return;
+    closeAuth();
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -58,43 +78,91 @@ export function AuthModal() {
     setInfo(null);
     setPending(true);
     try {
+      if (view === 'forgot') {
+        await resetPassword(email);
+        const message = 'Password reset email sent. Check your inbox for a link.';
+        setInfo(message);
+        toast.success(message);
+        return;
+      }
+
       if (authMode === 'signin') {
         await signIn(email, password);
-      } else {
-        if (password !== confirmPassword) {
-          throw new Error('Passwords do not match.');
-        }
-        const result = await signUp(name, email, password);
-        if (result.status === 'confirm_email') {
-          setInfo(
-            'Account created. Check your email for a confirmation link, then sign in.',
-          );
-          setPassword('');
-          setConfirmPassword('');
-        }
+        toast.success('Signed in. Welcome back.');
+        navigate('/app');
+        return;
       }
+
+      if (password !== confirmPassword) {
+        throw new Error('Passwords do not match.');
+      }
+
+      const result = await signUp(name, email, password);
+      if (result.status === 'confirm_email') {
+        const message =
+          'Account created. Check your email for a confirmation link, then sign in.';
+        setInfo(message);
+        toast.success(message);
+        setPassword('');
+        setConfirmPassword('');
+        return;
+      }
+
+      toast.success('Account created. Welcome to LURZ AI.');
+      navigate('/app');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong.');
+      const message = err instanceof Error ? err.message : 'Something went wrong.';
+      setError(message);
+      toast.error(message);
     } finally {
       setPending(false);
     }
   };
 
   const isSignIn = authMode === 'signin';
+  const isForgot = view === 'forgot';
+
+  const title = isForgot
+    ? 'Reset password'
+    : isSignIn
+      ? 'Welcome back'
+      : 'Create account';
+
+  const description = isForgot
+    ? 'Enter your email and we’ll send a reset link.'
+    : 'Unlock the desk — live markets and AI signals in one workspace.';
+
+  const submitLabel = pending
+    ? isForgot
+      ? 'Sending…'
+      : isSignIn
+        ? 'Signing in…'
+        : 'Creating account…'
+    : isForgot
+      ? 'Send reset link'
+      : isSignIn
+        ? 'Sign in'
+        : 'Create account';
 
   return (
     <Dialog
       open={authOpen}
       onOpenChange={(open) => {
-        if (!open) closeAuth();
+        if (!open) handleClose();
       }}
     >
       <DialogContent className="max-w-[calc(100%-2rem)] border-0 bg-transparent p-0 shadow-none sm:max-w-md sm:rounded-2xl [&>button]:right-5 [&>button]:top-5 [&>button]:z-10 [&>button]:rounded-full [&>button]:p-1.5 [&>button]:text-muted-foreground [&>button]:hover:bg-foreground/5 [&>button]:hover:text-foreground [&>button]:focus:ring-1 [&>button]:focus:ring-ring [&>button]:focus:ring-offset-0">
         <DialogTitle className="sr-only">
-          {isSignIn ? 'Sign in to LURZ AI' : 'Create your LURZ AI account'}
+          {isForgot
+            ? 'Reset your LURZ AI password'
+            : isSignIn
+              ? 'Sign in to LURZ AI'
+              : 'Create your LURZ AI account'}
         </DialogTitle>
         <DialogDescription className="sr-only">
-          Sign in to unlock your LURZ workspace.
+          {isForgot
+            ? 'Request a password reset email.'
+            : 'Sign in to unlock your LURZ workspace.'}
         </DialogDescription>
 
         <Card className="w-full overflow-hidden rounded-2xl border-border/80 bg-card shadow-[0_24px_64px_-24px_oklch(0.12_0.01_60_/_0.35)] [--card-spacing:1.5rem] sm:[--card-spacing:1.75rem]">
@@ -105,102 +173,126 @@ export function AuthModal() {
               </p>
               <div className="space-y-2">
                 <CardTitle className="font-display text-3xl font-normal tracking-tight text-foreground sm:text-[2rem]">
-                  {isSignIn ? 'Welcome back' : 'Create account'}
+                  {title}
                 </CardTitle>
-                <CardDescription className="max-w-[28ch] text-sm leading-relaxed text-muted-foreground">
-                  Unlock the desk — live markets and AI signals in one workspace.
+                <CardDescription className="max-w-[32ch] text-sm leading-relaxed text-muted-foreground">
+                  {description}
                 </CardDescription>
               </div>
             </div>
 
-            <Tabs value={authMode} onValueChange={handleModeChange}>
-              <TabsList className="grid h-11 w-full grid-cols-2 rounded-full border-border/70 bg-muted/80 p-1">
-                <TabsTrigger
-                  value="signin"
-                  className="rounded-full px-3 text-sm font-medium data-[state=active]:bg-foreground data-[state=active]:text-background data-[state=active]:shadow-none"
-                >
-                  Sign in
-                </TabsTrigger>
-                <TabsTrigger
-                  value="signup"
-                  className="rounded-full px-3 text-sm font-medium data-[state=active]:bg-foreground data-[state=active]:text-background data-[state=active]:shadow-none"
-                >
-                  Sign up
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
+            {!isForgot && (
+              <Tabs value={authMode} onValueChange={handleModeChange}>
+                <TabsList className="grid h-11 w-full grid-cols-2 rounded-full border-border/70 bg-muted/80 p-1">
+                  <TabsTrigger
+                    value="signin"
+                    disabled={pending}
+                    className="rounded-full px-3 text-sm font-medium data-[state=active]:bg-foreground data-[state=active]:text-background data-[state=active]:shadow-none"
+                  >
+                    Sign in
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="signup"
+                    disabled={pending}
+                    className="rounded-full px-3 text-sm font-medium data-[state=active]:bg-foreground data-[state=active]:text-background data-[state=active]:shadow-none"
+                  >
+                    Sign up
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            )}
           </CardHeader>
 
           <CardContent className="pt-5">
             <form id="lurz-auth-form" onSubmit={handleSubmit} className="space-y-4">
-              {authMode === 'signup' && (
+              <fieldset disabled={pending} className="space-y-4 border-0 p-0">
+                {!isForgot && authMode === 'signup' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="auth-name" className="text-xs font-medium text-foreground/80">
+                      Name
+                    </Label>
+                    <Input
+                      id="auth-name"
+                      autoComplete="name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Your name"
+                      required
+                      className={inputClassName}
+                    />
+                  </div>
+                )}
+
                 <div className="space-y-2">
-                  <Label htmlFor="auth-name" className="text-xs font-medium text-foreground/80">
-                    Name
+                  <Label htmlFor="auth-email" className="text-xs font-medium text-foreground/80">
+                    Email
                   </Label>
                   <Input
-                    id="auth-name"
-                    autoComplete="name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Your name"
+                    id="auth-email"
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
                     required
-                    className="h-11 rounded-xl border-border/80 bg-background px-3.5 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:border-foreground/30 focus-visible:ring-foreground/15"
+                    className={inputClassName}
                   />
                 </div>
-              )}
 
-              <div className="space-y-2">
-                <Label htmlFor="auth-email" className="text-xs font-medium text-foreground/80">
-                  Email
-                </Label>
-                <Input
-                  id="auth-email"
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  required
-                  className="h-11 rounded-xl border-border/80 bg-background px-3.5 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:border-foreground/30 focus-visible:ring-foreground/15"
-                />
-              </div>
+                {!isForgot && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label htmlFor="auth-password" className="text-xs font-medium text-foreground/80">
+                        Password
+                      </Label>
+                      {isSignIn && (
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-muted-foreground underline decoration-foreground/20 underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground"
+                          onClick={() => {
+                            setView('forgot');
+                            setError(null);
+                            setInfo(null);
+                            setPassword('');
+                          }}
+                        >
+                          Forgot password?
+                        </button>
+                      )}
+                    </div>
+                    <Input
+                      id="auth-password"
+                      type="password"
+                      autoComplete={isSignIn ? 'current-password' : 'new-password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                      minLength={MIN_PASSWORD_LENGTH}
+                      required
+                      className={inputClassName}
+                    />
+                  </div>
+                )}
 
-              <div className="space-y-2">
-                <Label htmlFor="auth-password" className="text-xs font-medium text-foreground/80">
-                  Password
-                </Label>
-                <Input
-                  id="auth-password"
-                  type="password"
-                  autoComplete={isSignIn ? 'current-password' : 'new-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-                  minLength={MIN_PASSWORD_LENGTH}
-                  required
-                  className="h-11 rounded-xl border-border/80 bg-background px-3.5 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:border-foreground/30 focus-visible:ring-foreground/15"
-                />
-              </div>
-
-              {authMode === 'signup' && (
-                <div className="space-y-2">
-                  <Label htmlFor="auth-confirm" className="text-xs font-medium text-foreground/80">
-                    Confirm password
-                  </Label>
-                  <Input
-                    id="auth-confirm"
-                    type="password"
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Repeat password"
-                    minLength={MIN_PASSWORD_LENGTH}
-                    required
-                    className="h-11 rounded-xl border-border/80 bg-background px-3.5 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:border-foreground/30 focus-visible:ring-foreground/15"
-                  />
-                </div>
-              )}
+                {!isForgot && authMode === 'signup' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="auth-confirm" className="text-xs font-medium text-foreground/80">
+                      Confirm password
+                    </Label>
+                    <Input
+                      id="auth-confirm"
+                      type="password"
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Repeat password"
+                      minLength={MIN_PASSWORD_LENGTH}
+                      required
+                      className={inputClassName}
+                    />
+                  </div>
+                )}
+              </fieldset>
 
               {error && (
                 <p className="text-sm text-destructive" role="alert">
@@ -223,15 +315,34 @@ export function AuthModal() {
               className="h-12 w-full rounded-full bg-foreground text-base text-background hover:bg-foreground/90"
               disabled={pending}
             >
-              {pending ? 'Please wait…' : isSignIn ? 'Sign in' : 'Create account'}
+              {pending && <Loader2 className="animate-spin" data-icon="inline-start" />}
+              {submitLabel}
             </Button>
             <p className="text-center text-sm text-muted-foreground">
-              {isSignIn ? (
+              {isForgot ? (
+                <>
+                  Remembered it?{' '}
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="font-medium text-foreground underline decoration-foreground/25 underline-offset-4 transition-colors hover:decoration-foreground disabled:opacity-50"
+                    onClick={() => {
+                      setView('auth');
+                      setAuthMode('signin');
+                      setError(null);
+                      setInfo(null);
+                    }}
+                  >
+                    Back to sign in
+                  </button>
+                </>
+              ) : isSignIn ? (
                 <>
                   New here?{' '}
                   <button
                     type="button"
-                    className="font-medium text-foreground underline decoration-foreground/25 underline-offset-4 transition-colors hover:decoration-foreground"
+                    disabled={pending}
+                    className="font-medium text-foreground underline decoration-foreground/25 underline-offset-4 transition-colors hover:decoration-foreground disabled:opacity-50"
                     onClick={() => handleModeChange('signup')}
                   >
                     Create an account
@@ -242,7 +353,8 @@ export function AuthModal() {
                   Already have an account?{' '}
                   <button
                     type="button"
-                    className="font-medium text-foreground underline decoration-foreground/25 underline-offset-4 transition-colors hover:decoration-foreground"
+                    disabled={pending}
+                    className="font-medium text-foreground underline decoration-foreground/25 underline-offset-4 transition-colors hover:decoration-foreground disabled:opacity-50"
                     onClick={() => handleModeChange('signin')}
                   >
                     Sign in

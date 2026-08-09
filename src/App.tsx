@@ -12,7 +12,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Toaster, toast } from 'sonner';
+import { toast } from 'sonner';
 
 import { Header } from './components/Header';
 import { MarketOverview } from './components/MarketOverview';
@@ -553,8 +553,6 @@ export default function App() {
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full bg-background text-foreground font-sans">
-        <Toaster position="top-right" theme={theme} richColors closeButton />
-
         <AppSidebar
           currentInstrument={instrument}
           favourites={favourites}
