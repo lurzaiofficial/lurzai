@@ -9,3 +9,6 @@ coverage/
 
 # Local datastore: contains trade and signal history.
 .data/
+
+.vercel
+.env*

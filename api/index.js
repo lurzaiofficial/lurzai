@@ -1,44 +1,9 @@
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
-// server/vercel-handler.ts
-var vercel_handler_exports = {};
-__export(vercel_handler_exports, {
-  default: () => handler
-});
-module.exports = __toCommonJS(vercel_handler_exports);
-
 // server/createApp.ts
-var import_express2 = __toESM(require("express"), 1);
-var import_cookie_parser = __toESM(require("cookie-parser"), 1);
+import express from "express";
+import cookieParser from "cookie-parser";
 
 // server/routes/api.ts
-var import_express = require("express");
+import { Router } from "express";
 
 // server/providers/types.ts
 var ProviderError = class extends Error {
@@ -2249,8 +2214,8 @@ function safeNumber(value, dp) {
 }
 
 // server/lib/store.ts
-var import_node_fs = __toESM(require("node:fs"), 1);
-var import_node_path = __toESM(require("node:path"), 1);
+import fs from "node:fs";
+import path from "node:path";
 
 // shared/types.ts
 var DEFAULT_SERVER_SETTINGS = {
@@ -2269,10 +2234,10 @@ var DEFAULT_SERVER_SETTINGS = {
 
 // server/lib/store.ts
 function dataDir() {
-  return process.env.DATA_DIR || import_node_path.default.join(process.cwd(), ".data");
+  return process.env.DATA_DIR || path.join(process.cwd(), ".data");
 }
 function dbFile() {
-  return import_node_path.default.join(dataDir(), "tradepilot.json");
+  return path.join(dataDir(), "tradepilot.json");
 }
 var EMPTY_DB = {
   version: 2,
@@ -2298,15 +2263,15 @@ var Store = class {
     const dir = dataDir();
     const file = dbFile();
     try {
-      if (!import_node_fs.default.existsSync(dir)) import_node_fs.default.mkdirSync(dir, { recursive: true });
-      if (import_node_fs.default.existsSync(file)) {
-        const parsed = JSON.parse(import_node_fs.default.readFileSync(file, "utf8"));
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      if (fs.existsSync(file)) {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
         this.db = { ...structuredClone(EMPTY_DB), ...parsed };
       }
     } catch (err) {
       logger.error("store: failed to load database, starting empty", err);
       try {
-        if (import_node_fs.default.existsSync(file)) import_node_fs.default.renameSync(file, `${file}.corrupt.${Date.now()}`);
+        if (fs.existsSync(file)) fs.renameSync(file, `${file}.corrupt.${Date.now()}`);
       } catch {
       }
       this.db = structuredClone(EMPTY_DB);
@@ -2337,10 +2302,10 @@ var Store = class {
       try {
         const dir = dataDir();
         const file = dbFile();
-        if (!import_node_fs.default.existsSync(dir)) import_node_fs.default.mkdirSync(dir, { recursive: true });
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const tmp = `${file}.tmp`;
-        import_node_fs.default.writeFileSync(tmp, JSON.stringify(this.db), "utf8");
-        import_node_fs.default.renameSync(tmp, file);
+        fs.writeFileSync(tmp, JSON.stringify(this.db), "utf8");
+        fs.renameSync(tmp, file);
       } catch (err) {
         logger.error("store: persist failed", err);
       }
@@ -2787,9 +2752,9 @@ function clamp(value, min, max) {
 }
 
 // server/lib/tracking.ts
-var import_node_crypto = __toESM(require("node:crypto"), 1);
+import crypto from "node:crypto";
 function id(prefix) {
-  return `${prefix}_${Date.now()}_${import_node_crypto.default.randomBytes(4).toString("hex")}`;
+  return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 }
 function trackSignal(signal, note) {
   const direction = signal.ai.signal === "SELL" ? "SHORT" : "LONG";
@@ -2918,12 +2883,12 @@ function computeStats(userId) {
 }
 
 // server/lib/email.ts
-var import_resend = require("resend");
+import { Resend } from "resend";
 var DEFAULT_FROM = "LURZ AI <onboarding@resend.dev>";
 function getResendClient() {
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) return null;
-  return new import_resend.Resend(apiKey);
+  return new Resend(apiKey);
 }
 function isEmailConfigured() {
   return Boolean(process.env.RESEND_API_KEY?.trim());
@@ -2977,13 +2942,13 @@ function escapeHtml(value) {
 }
 
 // server/lib/session.ts
-var import_node_crypto2 = __toESM(require("node:crypto"), 1);
+import crypto2 from "node:crypto";
 var SESSION_COOKIE = "tp_sid";
 var SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
 function ensureSession(req, res) {
   const existing = readCookie(req, SESSION_COOKIE);
   if (existing && /^[a-f0-9]{32}$/.test(existing)) return existing;
-  const sid = import_node_crypto2.default.randomBytes(16).toString("hex");
+  const sid = crypto2.randomBytes(16).toString("hex");
   res.cookie(SESSION_COOKIE, sid, {
     httpOnly: true,
     // unreadable from JavaScript
@@ -3006,7 +2971,7 @@ function readCookie(req, name) {
 }
 
 // server/routes/api.ts
-var api = (0, import_express.Router)();
+var api = Router();
 var VALID_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 var VALID_ASSET_CLASSES = ["CRYPTO", "STOCK", "FOREX", "COMMODITY", "INDEX", "ETF"];
 var VALID_SIZE_UNITS = ["QUOTE", "PERCENT"];
@@ -3586,9 +3551,9 @@ function createApp() {
     process.env.DATA_DIR = "/tmp/lurz-data";
   }
   store.load();
-  const app2 = (0, import_express2.default)();
-  app2.use(import_express2.default.json({ limit: "256kb" }));
-  app2.use((0, import_cookie_parser.default)());
+  const app2 = express();
+  app2.use(express.json({ limit: "256kb" }));
+  app2.use(cookieParser());
   app2.use((req, res, next) => {
     if (!req.path.startsWith("/api")) return next();
     const started = Date.now();
@@ -3622,3 +3587,6 @@ var app = createApp();
 function handler(req, res) {
   return app(req, res);
 }
+export {
+  handler as default
+};
