@@ -192,7 +192,14 @@ var logger = {
 };
 
 // server/providers/binance.ts
-var BASE_URL = process.env.BINANCE_BASE_URL || "https://api.binance.com";
+var REST_BASE_CANDIDATES = [
+  process.env.BINANCE_BASE_URL,
+  "https://data-api.binance.vision",
+  "https://api.binance.com",
+  "https://api1.binance.com",
+  "https://api.binance.us"
+].filter((u) => Boolean(u && u.trim()));
+var STREAM_BASE = process.env.BINANCE_STREAM_URL?.trim() || "wss://data-stream.binance.vision";
 var INTERVALS = {
   "1m": "1m",
   "5m": "5m",
@@ -240,6 +247,11 @@ var ASSET_NAMES = {
   RUNE: "THORChain",
   ALGO: "Algorand"
 };
+function isGeoBlockError(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = err instanceof ProviderError ? err.httpStatus : 0;
+  return status === 451 || message.includes("451") || /unavailable.*region|restricted location|restricted access/i.test(message);
+}
 var BinanceProvider = class {
   constructor() {
     this.id = "binance";
@@ -248,30 +260,81 @@ var BinanceProvider = class {
     this.requiresKey = false;
     this.supportsStreaming = true;
     this.instruments = new TtlCache(60 * 60 * 1e3);
+    /** Resolved REST host that answered successfully from this region. */
+    this.resolvedBaseUrl = null;
   }
   isAvailable() {
-    return !this.geoBlockedReason;
+    return !this.allHostsFailedReason;
   }
   unavailableReason() {
-    return this.geoBlockedReason;
+    return this.allHostsFailedReason;
+  }
+  /** GET JSON from the first reachable Binance market-data host. */
+  async fetchFromBinance(path2, options) {
+    if (this.resolvedBaseUrl) {
+      try {
+        return await providerFetch(this.id, `${this.resolvedBaseUrl}${path2}`, options);
+      } catch (err) {
+        if (!isGeoBlockError(err)) throw err;
+        this.resolvedBaseUrl = null;
+      }
+    }
+    const errors = [];
+    for (const base of REST_BASE_CANDIDATES) {
+      const url = `${base.replace(/\/$/, "")}${path2}`;
+      try {
+        const data = await providerFetch(this.id, url, options);
+        this.resolvedBaseUrl = base.replace(/\/$/, "");
+        this.allHostsFailedReason = void 0;
+        logger.info("binance: using REST host", { base: this.resolvedBaseUrl });
+        return data;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`${base}: ${message.slice(0, 120)}`);
+        if (!isGeoBlockError(err) && !(err instanceof ProviderError && err.httpStatus >= 500)) {
+          if (err instanceof ProviderError && err.httpStatus > 0 && err.httpStatus < 500 && err.httpStatus !== 403 && err.httpStatus !== 451) {
+            throw err;
+          }
+        }
+      }
+    }
+    this.allHostsFailedReason = "Binance market data is unreachable from this server region.";
+    throw new ProviderError(
+      `Binance all hosts failed: ${errors.join(" | ")}`,
+      this.id,
+      451,
+      this.allHostsFailedReason
+    );
   }
   async listInstruments() {
-    if (this.geoBlockedReason) {
+    if (this.allHostsFailedReason) {
       throw new ProviderError(
-        "Binance geo-blocked",
+        "Binance unavailable",
         this.id,
         451,
-        this.geoBlockedReason
+        this.allHostsFailedReason
       );
     }
     try {
       return await this.instruments.get(async () => {
-        const data = await providerFetch(
-          this.id,
-          `${BASE_URL}/api/v3/exchangeInfo?permissions=SPOT`,
-          { timeoutMs: 2e4 }
-        );
-        const list = (data?.symbols || []).filter((s) => s.status === "TRADING" && s.isSpotTradingAllowed).map((s) => ({
+        let data;
+        try {
+          data = await this.fetchFromBinance(
+            "/api/v3/exchangeInfo?permissions=SPOT",
+            { timeoutMs: 2e4 }
+          );
+        } catch (err) {
+          if (err instanceof ProviderError && (err.httpStatus === 400 || err.httpStatus === 404)) {
+            data = await this.fetchFromBinance("/api/v3/exchangeInfo", { timeoutMs: 2e4 });
+          } else {
+            throw err;
+          }
+        }
+        const list = (data?.symbols || []).filter((s) => {
+          if (s.status !== "TRADING") return false;
+          if (s.isSpotTradingAllowed === false) return false;
+          return true;
+        }).map((s) => ({
           id: makeInstrumentId(this.id, s.symbol),
           provider: this.id,
           providerLabel: this.label,
@@ -283,14 +346,15 @@ var BinanceProvider = class {
           quoteAsset: s.quoteAsset,
           currency: s.quoteAsset
         }));
-        logger.info("binance: instrument list loaded", { count: list.length });
+        logger.info("binance: instrument list loaded", {
+          count: list.length,
+          host: this.resolvedBaseUrl
+        });
         return list;
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("451") || /unavailable.*region|restricted location/i.test(message)) {
-        this.geoBlockedReason = "Binance is blocked in this server region. Use Coinbase, Kraken, Bybit, or OKX instead.";
-        logger.warn("binance: geo-blocked; marking unavailable", { message });
+      if (isGeoBlockError(err) && !this.allHostsFailedReason) {
+        this.allHostsFailedReason = "Binance market data is unreachable from this server region.";
       }
       throw err;
     }
@@ -301,9 +365,8 @@ var BinanceProvider = class {
     return all.find((i) => i.providerSymbol === wanted) || null;
   }
   async getQuote(instrument) {
-    const d = await providerFetch(
-      this.id,
-      `${BASE_URL}/api/v3/ticker/24hr?symbol=${instrument.providerSymbol}`
+    const d = await this.fetchFromBinance(
+      `/api/v3/ticker/24hr?symbol=${instrument.providerSymbol}`
     );
     return {
       instrumentId: instrument.id,
@@ -328,9 +391,8 @@ var BinanceProvider = class {
         `Binance does not support the ${timeframe} timeframe here.`
       );
     }
-    const rows = await providerFetch(
-      this.id,
-      `${BASE_URL}/api/v3/klines?symbol=${instrument.providerSymbol}&interval=${interval}&limit=${Math.min(limit, 1e3)}`
+    const rows = await this.fetchFromBinance(
+      `/api/v3/klines?symbol=${instrument.providerSymbol}&interval=${interval}&limit=${Math.min(limit, 1e3)}`
     );
     const now = Date.now();
     return rows.map((r) => ({
@@ -346,15 +408,17 @@ var BinanceProvider = class {
   }
   getStreamConfig(instrument, timeframe) {
     const s = instrument.providerSymbol.toLowerCase();
+    const base = STREAM_BASE.replace(/\/$/, "");
     return {
       kind: this.id,
-      url: `wss://stream.binance.com:9443/stream?streams=${s}@ticker/${s}@kline_${INTERVALS[timeframe]}`
+      // Market-data stream host mirrors public kline/ticker feeds.
+      url: `${base}/stream?streams=${s}@ticker/${s}@kline_${INTERVALS[timeframe]}`
     };
   }
 };
 
 // server/providers/bybit.ts
-var BASE_URL2 = "https://api.bybit.com";
+var BASE_URL = "https://api.bybit.com";
 var INTERVALS2 = {
   "1m": "1",
   "5m": "5",
@@ -401,7 +465,7 @@ var BybitProvider = class {
     return this.instruments.get(async () => {
       const data = await providerFetch(
         this.id,
-        `${BASE_URL2}/v5/market/instruments-info?category=spot&limit=1000`,
+        `${BASE_URL}/v5/market/instruments-info?category=spot&limit=1000`,
         { timeoutMs: 2e4 }
       );
       const result = unwrap(data, this.id, "its market list");
@@ -429,7 +493,7 @@ var BybitProvider = class {
   async getQuote(instrument) {
     const data = await providerFetch(
       this.id,
-      `${BASE_URL2}/v5/market/tickers?category=spot&symbol=${instrument.providerSymbol}`
+      `${BASE_URL}/v5/market/tickers?category=spot&symbol=${instrument.providerSymbol}`
     );
     const result = unwrap(data, this.id, "a price");
     const t = result?.list?.[0];
@@ -469,7 +533,7 @@ var BybitProvider = class {
     }
     const data = await providerFetch(
       this.id,
-      `${BASE_URL2}/v5/market/kline?category=spot&symbol=${instrument.providerSymbol}&interval=${interval}&limit=${Math.min(limit, 1e3)}`
+      `${BASE_URL}/v5/market/kline?category=spot&symbol=${instrument.providerSymbol}&interval=${interval}&limit=${Math.min(limit, 1e3)}`
     );
     const result = unwrap(data, this.id, "candles");
     const now = Math.floor(Date.now() / 1e3);
@@ -504,7 +568,7 @@ var BybitProvider = class {
 };
 
 // server/providers/coinbase.ts
-var BASE_URL3 = "https://api.exchange.coinbase.com";
+var BASE_URL2 = "https://api.exchange.coinbase.com";
 var GRANULARITY = {
   "1m": 60,
   "5m": 300,
@@ -532,7 +596,7 @@ var CoinbaseProvider = class {
   }
   async listInstruments() {
     return this.instruments.get(async () => {
-      const data = await providerFetch(this.id, `${BASE_URL3}/products`, { timeoutMs: 2e4 });
+      const data = await providerFetch(this.id, `${BASE_URL2}/products`, { timeoutMs: 2e4 });
       const list = (data || []).filter((p) => p.status === "online" && !p.trading_disabled).map((p) => ({
         id: makeInstrumentId(this.id, p.id),
         provider: this.id,
@@ -557,8 +621,8 @@ var CoinbaseProvider = class {
   }
   async getQuote(instrument) {
     const [ticker, stats] = await Promise.all([
-      providerFetch(this.id, `${BASE_URL3}/products/${instrument.providerSymbol}/ticker`),
-      providerFetch(this.id, `${BASE_URL3}/products/${instrument.providerSymbol}/stats`)
+      providerFetch(this.id, `${BASE_URL2}/products/${instrument.providerSymbol}/ticker`),
+      providerFetch(this.id, `${BASE_URL2}/products/${instrument.providerSymbol}/stats`)
     ]);
     const price = parseFloat(ticker.price);
     const open = parseFloat(stats.open);
@@ -592,7 +656,7 @@ var CoinbaseProvider = class {
     const start = new Date(end.getTime() - count * granularity * 1e3);
     const rows = await providerFetch(
       this.id,
-      `${BASE_URL3}/products/${instrument.providerSymbol}/candles?granularity=${granularity}&start=${start.toISOString()}&end=${end.toISOString()}`
+      `${BASE_URL2}/products/${instrument.providerSymbol}/candles?granularity=${granularity}&start=${start.toISOString()}&end=${end.toISOString()}`
     );
     const now = Math.floor(Date.now() / 1e3);
     return (rows || []).map((r) => ({
@@ -608,7 +672,7 @@ var CoinbaseProvider = class {
 };
 
 // server/providers/kraken.ts
-var BASE_URL4 = "https://api.kraken.com/0/public";
+var BASE_URL3 = "https://api.kraken.com/0/public";
 var INTERVAL_MINUTES = {
   "1m": 1,
   "5m": 5,
@@ -658,7 +722,7 @@ var KrakenProvider = class {
   }
   async listInstruments() {
     return this.instruments.get(async () => {
-      const data = await providerFetch(this.id, `${BASE_URL4}/AssetPairs`, { timeoutMs: 2e4 });
+      const data = await providerFetch(this.id, `${BASE_URL3}/AssetPairs`, { timeoutMs: 2e4 });
       if (data?.error?.length) {
         throw new ProviderError(
           `Kraken error: ${data.error.join(", ")}`,
@@ -695,7 +759,7 @@ var KrakenProvider = class {
   async getQuote(instrument) {
     const data = await providerFetch(
       this.id,
-      `${BASE_URL4}/Ticker?pair=${encodeURIComponent(instrument.providerSymbol)}`
+      `${BASE_URL3}/Ticker?pair=${encodeURIComponent(instrument.providerSymbol)}`
     );
     if (data?.error?.length) {
       throw new ProviderError(
@@ -743,7 +807,7 @@ var KrakenProvider = class {
     }
     const data = await providerFetch(
       this.id,
-      `${BASE_URL4}/OHLC?pair=${encodeURIComponent(instrument.providerSymbol)}&interval=${interval}`
+      `${BASE_URL3}/OHLC?pair=${encodeURIComponent(instrument.providerSymbol)}&interval=${interval}`
     );
     if (data?.error?.length) {
       throw new ProviderError(
@@ -777,7 +841,7 @@ var KrakenProvider = class {
 };
 
 // server/providers/okx.ts
-var BASE_URL5 = "https://www.okx.com";
+var BASE_URL4 = "https://www.okx.com";
 var BAR = {
   "1m": "1m",
   "5m": "5m",
@@ -824,7 +888,7 @@ var OkxProvider = class {
     return this.instruments.get(async () => {
       const data = await providerFetch(
         this.id,
-        `${BASE_URL5}/api/v5/public/instruments?instType=SPOT`,
+        `${BASE_URL4}/api/v5/public/instruments?instType=SPOT`,
         { timeoutMs: 2e4 }
       );
       const rows = unwrap2(data, "its market list");
@@ -853,7 +917,7 @@ var OkxProvider = class {
   async getQuote(instrument) {
     const data = await providerFetch(
       this.id,
-      `${BASE_URL5}/api/v5/market/ticker?instId=${instrument.providerSymbol}`
+      `${BASE_URL4}/api/v5/market/ticker?instId=${instrument.providerSymbol}`
     );
     const rows = unwrap2(data, "a price");
     const t = rows?.[0];
@@ -893,7 +957,7 @@ var OkxProvider = class {
     }
     const data = await providerFetch(
       this.id,
-      `${BASE_URL5}/api/v5/market/candles?instId=${instrument.providerSymbol}&bar=${bar}&limit=${Math.min(limit, 300)}`
+      `${BASE_URL4}/api/v5/market/candles?instId=${instrument.providerSymbol}&bar=${bar}&limit=${Math.min(limit, 300)}`
     );
     const rows = unwrap2(data, "candles");
     const now = Math.floor(Date.now() / 1e3);
@@ -928,7 +992,7 @@ var OkxProvider = class {
 };
 
 // server/providers/twelvedata.ts
-var BASE_URL6 = "https://api.twelvedata.com";
+var BASE_URL5 = "https://api.twelvedata.com";
 var INTERVALS3 = {
   "1m": "1min",
   "5m": "5min",
@@ -1069,7 +1133,7 @@ var TwelveDataProvider = class {
     try {
       const data = await providerFetch(
         this.id,
-        `${BASE_URL6}/symbol_search?symbol=${encodeURIComponent(wanted)}&outputsize=1&apikey=${this.requireKey()}`
+        `${BASE_URL5}/symbol_search?symbol=${encodeURIComponent(wanted)}&outputsize=1&apikey=${this.requireKey()}`
       );
       const match = data?.data?.[0];
       if (!match) return null;
@@ -1099,7 +1163,7 @@ var TwelveDataProvider = class {
     if (cached && cached.expiresAt > Date.now()) return cached.value;
     const data = await providerFetch(
       this.id,
-      `${BASE_URL6}/quote?symbol=${encodeURIComponent(instrument.providerSymbol)}&apikey=${this.requireKey()}`
+      `${BASE_URL5}/quote?symbol=${encodeURIComponent(instrument.providerSymbol)}&apikey=${this.requireKey()}`
     );
     if (data?.status === "error" || data?.code >= 400) {
       throw new ProviderError(
@@ -1147,7 +1211,7 @@ var TwelveDataProvider = class {
     }
     const data = await providerFetch(
       this.id,
-      `${BASE_URL6}/time_series?symbol=${encodeURIComponent(instrument.providerSymbol)}&interval=${interval}&outputsize=${Math.min(limit, 5e3)}&order=ASC&apikey=${this.requireKey()}`
+      `${BASE_URL5}/time_series?symbol=${encodeURIComponent(instrument.providerSymbol)}&interval=${interval}&outputsize=${Math.min(limit, 5e3)}&order=ASC&apikey=${this.requireKey()}`
     );
     if (data?.status === "error" || data?.code >= 400) {
       throw new ProviderError(
@@ -1253,13 +1317,12 @@ var QUOTE_PRIORITY = {
   BNB: 5
 };
 var PROVIDER_PRIORITY = {
-  // Prefer venues that work from common serverless regions (Binance often 451s).
-  coinbase: 0,
+  binance: 0,
   twelvedata: 0,
-  kraken: 1,
-  bybit: 2,
-  okx: 3,
-  binance: 4
+  coinbase: 1,
+  kraken: 2,
+  bybit: 3,
+  okx: 4
 };
 var MAJORS = /* @__PURE__ */ new Set([
   "BTC",
@@ -3086,7 +3149,7 @@ api.get("/status", async (req, res) => {
       email: isEmailConfigured() ? "Resend transactional email is configured" : "RESEND_API_KEY is not configured"
     }
   };
-  const probeOrder = ["coinbase", "kraken", "bybit", "okx", "binance", "twelvedata"];
+  const probeOrder = ["binance", "coinbase", "kraken", "bybit", "okx", "twelvedata"];
   let connectedVia = null;
   let lastError = null;
   for (const id2 of probeOrder) {

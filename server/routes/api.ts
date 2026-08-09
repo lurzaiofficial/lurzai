@@ -169,7 +169,7 @@ api.get('/status', async (req, res) => {
 
   // Probe providers until one responds — Binance is often geo-blocked (HTTP 451)
   // from Vercel/US regions, so we must not hard-depend on it for status.
-  const probeOrder = ['coinbase', 'kraken', 'bybit', 'okx', 'binance', 'twelvedata'] as const;
+  const probeOrder = ['binance', 'coinbase', 'kraken', 'bybit', 'okx', 'twelvedata'] as const;
   let connectedVia: string | null = null;
   let lastError: string | null = null;
 
