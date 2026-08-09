@@ -65,8 +65,31 @@ Copy from [`.env.example`](.env.example):
 | `APP_URL` | No | App URL sent to OpenRouter for attribution (default `http://localhost:3000`) |
 | `TWELVEDATA_API_KEY` | No | Enables stocks, forex, commodities, indices, and ETFs; crypto works without it |
 | `BINANCE_BASE_URL` | No | Override Binance REST host if blocked in your region |
+| `VITE_SUPABASE_URL` | Yes (for auth) | Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | Yes (for auth) | Supabase anon/publishable key |
+| `RESEND_API_KEY` | No | Server-side Resend key for app welcome emails |
+| `RESEND_FROM` | No | From address for app mail (default `LURZ AI <onboarding@resend.dev>`) |
 
 Never commit a real `.env` file. Keep secrets out of version control.
+
+### Resend + Vercel
+
+1. Add `RESEND_API_KEY` (and optionally `RESEND_FROM`) in **Vercel → Project → Settings → Environment Variables** for Production and Preview. Secrets cannot be pushed via git.
+2. Redeploy after adding the variable so the server process picks it up.
+3. Verify a sending domain in [Resend Domains](https://resend.com/domains), then set `RESEND_FROM` to an address on that domain.
+
+### Supabase Auth emails (forgot password / confirm signup)
+
+Sign-in, sign-up, and forgot-password still go through **Supabase Auth**. Resend does not replace Auth unless you point Supabase at Resend SMTP:
+
+1. Supabase Dashboard → **Authentication** → **SMTP Settings** (or Emails → SMTP)
+2. Enable Custom SMTP:
+   - **Host:** `smtp.resend.com`
+   - **Port:** `465` (SSL) or `587`
+   - **Username:** `resend`
+   - **Password:** your Resend API key (same value as `RESEND_API_KEY`)
+   - **Sender email / name:** a verified Resend domain address
+3. Keep Site URL and Redirect URLs aligned with your Vercel domain (and `/reset-password` for recovery).
 
 ## Scripts
 

@@ -28,6 +28,7 @@ import { analyzeMarket } from '../../shared/analysis/indicators';
 import { computeSignalQuality } from '../../shared/analysis/aiSchema';
 import { checkTrackedSignal, closeTracked, computeStats, trackSignal } from '../lib/tracking';
 import { logger } from '../lib/logger';
+import { isEmailConfigured, sendWelcomeEmail } from '../lib/email';
 import { store } from '../lib/store';
 import { ensureSession } from '../lib/session';
 import type {
@@ -99,6 +100,53 @@ api.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'LURZ AI', time: Date.now() });
 });
 
+/** Simple per-IP cooldown for welcome emails (abuse guard). */
+const welcomeEmailCooldown = new Map<string, number>();
+const WELCOME_COOLDOWN_MS = 60_000;
+
+api.post('/email/welcome', async (req, res) => {
+  ensureSession(req, res);
+
+  if (!isEmailConfigured()) {
+    return res.status(503).json({
+      error: 'Transactional email is not configured on this server.',
+      skipped: true,
+    });
+  }
+
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const userId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : undefined;
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return fail(res, 400, 'A valid email is required.');
+  }
+  if (!name) {
+    return fail(res, 400, 'Name is required.');
+  }
+
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const last = welcomeEmailCooldown.get(ip) ?? 0;
+  if (now - last < WELCOME_COOLDOWN_MS) {
+    return fail(res, 429, 'Please wait before requesting another welcome email.');
+  }
+  welcomeEmailCooldown.set(ip, now);
+
+  try {
+    const result = await sendWelcomeEmail({ to: email, name, userId });
+    if (!result.ok) {
+      if (result.skipped) {
+        return res.status(503).json({ error: result.error, skipped: true });
+      }
+      return fail(res, 502, 'Failed to send welcome email.', result.error);
+    }
+    return res.json({ ok: true, id: result.id });
+  } catch (err) {
+    return handleError(res, err, 'Failed to send welcome email.');
+  }
+});
+
 /** Honest connection status: nothing is reported healthy without evidence. */
 api.get('/status', async (req, res) => {
   ensureSession(req, res);
@@ -107,11 +155,15 @@ api.get('/status', async (req, res) => {
   const result: any = {
     marketData: 'DISCONNECTED',
     ai: isAIConfigured() ? 'CONNECTED' : 'UNAVAILABLE',
+    email: isEmailConfigured() ? 'CONNECTED' : 'UNAVAILABLE',
     providers,
     details: {
       ai: isAIConfigured()
         ? 'AI analysis service is configured'
         : 'AI analysis is not configured on this server',
+      email: isEmailConfigured()
+        ? 'Resend transactional email is configured'
+        : 'RESEND_API_KEY is not configured',
     },
   };
 

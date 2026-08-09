@@ -201,12 +201,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (error) throw new Error(error.message);
 
+      const mapped = mapUser(data.user);
+      // App-owned welcome mail via Resend (optional). Auth confirmation / reset
+      // emails still come from Supabase (configure Custom SMTP → Resend for those).
+      if (mapped) {
+        void fetch('/api/email/welcome', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: mapped.email,
+            name: mapped.name,
+            userId: mapped.id,
+          }),
+        }).catch(() => {
+          // Non-blocking: signup must succeed even if email delivery fails.
+        });
+      }
+
       // When email confirmation is required, Supabase returns a user without a session.
       if (!data.session) {
         return { status: 'confirm_email' };
       }
 
-      setUser(mapUser(data.user));
+      setUser(mapped);
       setAuthOpen(false);
       clearAuthParam();
       return { status: 'signed_in' };
