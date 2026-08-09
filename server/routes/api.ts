@@ -167,17 +167,36 @@ api.get('/status', async (req, res) => {
     },
   };
 
-  // Verify market data by actually loading a provider's instrument list.
-  try {
-    const binance = getProvider('binance');
-    const list = await binance.listInstruments();
-    result.marketData = list.length > 0 ? 'CONNECTED' : 'ERROR';
+  // Probe providers until one responds — Binance is often geo-blocked (HTTP 451)
+  // from Vercel/US regions, so we must not hard-depend on it for status.
+  const probeOrder = ['coinbase', 'kraken', 'bybit', 'okx', 'binance', 'twelvedata'] as const;
+  let connectedVia: string | null = null;
+  let lastError: string | null = null;
+
+  for (const id of probeOrder) {
+    try {
+      const provider = getProvider(id);
+      if (!provider.isAvailable()) continue;
+      const list = await provider.listInstruments();
+      if (list.length > 0) {
+        connectedVia = provider.label;
+        break;
+      }
+    } catch (err) {
+      lastError =
+        err instanceof ProviderError
+          ? err.userMessage || `${id} unavailable`
+          : `${id} unavailable`;
+    }
+  }
+
+  if (connectedVia) {
+    result.marketData = 'CONNECTED';
     const available = providers.filter((p) => p.available).length;
-    result.details.marketData = `${available} of ${providers.length} data sources available`;
-  } catch (err) {
+    result.details.marketData = `${available} of ${providers.length} data sources available (via ${connectedVia})`;
+  } else {
     result.marketData = 'ERROR';
-    result.details.marketData =
-      err instanceof ProviderError ? err.userMessage || 'Market data unavailable' : 'Market data unavailable';
+    result.details.marketData = lastError || 'Market data unavailable';
   }
 
   res.json(result);

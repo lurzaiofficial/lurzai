@@ -250,33 +250,50 @@ var BinanceProvider = class {
     this.instruments = new TtlCache(60 * 60 * 1e3);
   }
   isAvailable() {
-    return true;
+    return !this.geoBlockedReason;
   }
   unavailableReason() {
-    return void 0;
+    return this.geoBlockedReason;
   }
   async listInstruments() {
-    return this.instruments.get(async () => {
-      const data = await providerFetch(
+    if (this.geoBlockedReason) {
+      throw new ProviderError(
+        "Binance geo-blocked",
         this.id,
-        `${BASE_URL}/api/v3/exchangeInfo?permissions=SPOT`,
-        { timeoutMs: 2e4 }
+        451,
+        this.geoBlockedReason
       );
-      const list = (data?.symbols || []).filter((s) => s.status === "TRADING" && s.isSpotTradingAllowed).map((s) => ({
-        id: makeInstrumentId(this.id, s.symbol),
-        provider: this.id,
-        providerLabel: this.label,
-        providerSymbol: s.symbol,
-        displaySymbol: `${s.baseAsset}/${s.quoteAsset}`,
-        name: ASSET_NAMES[s.baseAsset] || s.baseAsset,
-        assetClass: "CRYPTO",
-        baseAsset: s.baseAsset,
-        quoteAsset: s.quoteAsset,
-        currency: s.quoteAsset
-      }));
-      logger.info("binance: instrument list loaded", { count: list.length });
-      return list;
-    });
+    }
+    try {
+      return await this.instruments.get(async () => {
+        const data = await providerFetch(
+          this.id,
+          `${BASE_URL}/api/v3/exchangeInfo?permissions=SPOT`,
+          { timeoutMs: 2e4 }
+        );
+        const list = (data?.symbols || []).filter((s) => s.status === "TRADING" && s.isSpotTradingAllowed).map((s) => ({
+          id: makeInstrumentId(this.id, s.symbol),
+          provider: this.id,
+          providerLabel: this.label,
+          providerSymbol: s.symbol,
+          displaySymbol: `${s.baseAsset}/${s.quoteAsset}`,
+          name: ASSET_NAMES[s.baseAsset] || s.baseAsset,
+          assetClass: "CRYPTO",
+          baseAsset: s.baseAsset,
+          quoteAsset: s.quoteAsset,
+          currency: s.quoteAsset
+        }));
+        logger.info("binance: instrument list loaded", { count: list.length });
+        return list;
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("451") || /unavailable.*region|restricted location/i.test(message)) {
+        this.geoBlockedReason = "Binance is blocked in this server region. Use Coinbase, Kraken, Bybit, or OKX instead.";
+        logger.warn("binance: geo-blocked; marking unavailable", { message });
+      }
+      throw err;
+    }
   }
   async getInstrument(providerSymbol) {
     const all = await this.listInstruments();
@@ -1236,12 +1253,13 @@ var QUOTE_PRIORITY = {
   BNB: 5
 };
 var PROVIDER_PRIORITY = {
-  binance: 0,
+  // Prefer venues that work from common serverless regions (Binance often 451s).
+  coinbase: 0,
   twelvedata: 0,
-  coinbase: 1,
-  kraken: 2,
-  bybit: 3,
-  okx: 4
+  kraken: 1,
+  bybit: 2,
+  okx: 3,
+  binance: 4
 };
 var MAJORS = /* @__PURE__ */ new Set([
   "BTC",
@@ -3068,15 +3086,29 @@ api.get("/status", async (req, res) => {
       email: isEmailConfigured() ? "Resend transactional email is configured" : "RESEND_API_KEY is not configured"
     }
   };
-  try {
-    const binance = getProvider("binance");
-    const list = await binance.listInstruments();
-    result.marketData = list.length > 0 ? "CONNECTED" : "ERROR";
+  const probeOrder = ["coinbase", "kraken", "bybit", "okx", "binance", "twelvedata"];
+  let connectedVia = null;
+  let lastError = null;
+  for (const id2 of probeOrder) {
+    try {
+      const provider = getProvider(id2);
+      if (!provider.isAvailable()) continue;
+      const list = await provider.listInstruments();
+      if (list.length > 0) {
+        connectedVia = provider.label;
+        break;
+      }
+    } catch (err) {
+      lastError = err instanceof ProviderError ? err.userMessage || `${id2} unavailable` : `${id2} unavailable`;
+    }
+  }
+  if (connectedVia) {
+    result.marketData = "CONNECTED";
     const available = providers2.filter((p) => p.available).length;
-    result.details.marketData = `${available} of ${providers2.length} data sources available`;
-  } catch (err) {
+    result.details.marketData = `${available} of ${providers2.length} data sources available (via ${connectedVia})`;
+  } else {
     result.marketData = "ERROR";
-    result.details.marketData = err instanceof ProviderError ? err.userMessage || "Market data unavailable" : "Market data unavailable";
+    result.details.marketData = lastError || "Market data unavailable";
   }
   res.json(result);
 });

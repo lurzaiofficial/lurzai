@@ -53,42 +53,63 @@ export class BinanceProvider implements MarketDataProvider {
   readonly supportsStreaming = true;
 
   private instruments = new TtlCache<Instrument[]>(60 * 60 * 1000);
+  /** Set when Binance blocks the server region (common on Vercel US → HTTP 451). */
+  private geoBlockedReason: string | undefined;
 
   isAvailable(): boolean {
-    return true;
+    return !this.geoBlockedReason;
   }
 
   unavailableReason(): string | undefined {
-    return undefined;
+    return this.geoBlockedReason;
   }
 
   async listInstruments(): Promise<Instrument[]> {
-    return this.instruments.get(async () => {
-      const data = await providerFetch<any>(
+    if (this.geoBlockedReason) {
+      throw new ProviderError(
+        'Binance geo-blocked',
         this.id,
-        `${BASE_URL}/api/v3/exchangeInfo?permissions=SPOT`,
-        { timeoutMs: 20000 }
+        451,
+        this.geoBlockedReason
       );
+    }
 
-      const list: Instrument[] = (data?.symbols || [])
-        // Only surface pairs a user can actually act on right now.
-        .filter((s: any) => s.status === 'TRADING' && s.isSpotTradingAllowed)
-        .map((s: any) => ({
-          id: makeInstrumentId(this.id, s.symbol),
-          provider: this.id,
-          providerLabel: this.label,
-          providerSymbol: s.symbol,
-          displaySymbol: `${s.baseAsset}/${s.quoteAsset}`,
-          name: ASSET_NAMES[s.baseAsset] || s.baseAsset,
-          assetClass: 'CRYPTO' as const,
-          baseAsset: s.baseAsset,
-          quoteAsset: s.quoteAsset,
-          currency: s.quoteAsset,
-        }));
+    try {
+      return await this.instruments.get(async () => {
+        const data = await providerFetch<any>(
+          this.id,
+          `${BASE_URL}/api/v3/exchangeInfo?permissions=SPOT`,
+          { timeoutMs: 20000 }
+        );
 
-      logger.info('binance: instrument list loaded', { count: list.length });
-      return list;
-    });
+        const list: Instrument[] = (data?.symbols || [])
+          // Only surface pairs a user can actually act on right now.
+          .filter((s: any) => s.status === 'TRADING' && s.isSpotTradingAllowed)
+          .map((s: any) => ({
+            id: makeInstrumentId(this.id, s.symbol),
+            provider: this.id,
+            providerLabel: this.label,
+            providerSymbol: s.symbol,
+            displaySymbol: `${s.baseAsset}/${s.quoteAsset}`,
+            name: ASSET_NAMES[s.baseAsset] || s.baseAsset,
+            assetClass: 'CRYPTO' as const,
+            baseAsset: s.baseAsset,
+            quoteAsset: s.quoteAsset,
+            currency: s.quoteAsset,
+          }));
+
+        logger.info('binance: instrument list loaded', { count: list.length });
+        return list;
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('451') || /unavailable.*region|restricted location/i.test(message)) {
+        this.geoBlockedReason =
+          'Binance is blocked in this server region. Use Coinbase, Kraken, Bybit, or OKX instead.';
+        logger.warn('binance: geo-blocked; marking unavailable', { message });
+      }
+      throw err;
+    }
   }
 
   async getInstrument(providerSymbol: string): Promise<Instrument | null> {

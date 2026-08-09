@@ -78,12 +78,13 @@ const QUOTE_PRIORITY: Record<string, number> = {
 
 /** Venue preference, so the same coin does not fill the list five times over. */
 const PROVIDER_PRIORITY: Record<ProviderId, number> = {
-  binance: 0,
+  // Prefer venues that work from common serverless regions (Binance often 451s).
+  coinbase: 0,
   twelvedata: 0,
-  coinbase: 1,
-  kraken: 2,
-  bybit: 3,
-  okx: 4,
+  kraken: 1,
+  bybit: 2,
+  okx: 3,
+  binance: 4,
 };
 
 /** Instruments that should surface first when they tie on match quality. */
