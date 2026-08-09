@@ -152,13 +152,97 @@ export default function App() {
     }
   }, []);
 
-  const refreshPlan = useCallback(async () => {
-    try {
-      setPlan(await planApi.get());
-    } catch {
-      // Non-blocking — limits still enforced server-side.
-    }
+  const applyPlan = useCallback((next: UserPlanView, opts?: { preferHigherUsage?: boolean }) => {
+    setPlan((prev) => {
+      if (!prev || !opts?.preferHigherUsage) return next;
+      // Ignore stale polls that would roll usage backwards right after Analyse.
+      return {
+        ...next,
+        analysesUsedToday: Math.max(prev.analysesUsedToday, next.analysesUsedToday),
+        chatUsedToday: Math.max(prev.chatUsedToday, next.chatUsedToday),
+      };
+    });
+    setStats((prev) => {
+      if (!prev) return prev;
+      const merged =
+        prev.plan && opts?.preferHigherUsage
+          ? {
+              ...next,
+              analysesUsedToday: Math.max(
+                prev.plan.analysesUsedToday,
+                next.analysesUsedToday
+              ),
+              chatUsedToday: Math.max(prev.plan.chatUsedToday, next.chatUsedToday),
+            }
+          : next;
+      return {
+        ...prev,
+        signalsToday: merged.analysesUsedToday,
+        maxSignalsPerDay: merged.maxAnalysesPerDay,
+        plan: merged,
+      };
+    });
   }, []);
+
+  const bumpPlanUsage = useCallback((kind: 'analyses' | 'chat', by = 1) => {
+    setPlan((prev) => {
+      if (!prev) return prev;
+      return kind === 'analyses'
+        ? {
+            ...prev,
+            analysesUsedToday: Math.min(
+              prev.maxAnalysesPerDay,
+              prev.analysesUsedToday + by
+            ),
+          }
+        : {
+            ...prev,
+            chatUsedToday: Math.min(
+              prev.maxChatMessagesPerDay,
+              prev.chatUsedToday + by
+            ),
+          };
+    });
+    setStats((statsPrev) => {
+      if (!statsPrev?.plan) return statsPrev;
+      const prevPlan = statsPrev.plan;
+      const nextPlan =
+        kind === 'analyses'
+          ? {
+              ...prevPlan,
+              analysesUsedToday: Math.min(
+                prevPlan.maxAnalysesPerDay,
+                prevPlan.analysesUsedToday + by
+              ),
+            }
+          : {
+              ...prevPlan,
+              chatUsedToday: Math.min(
+                prevPlan.maxChatMessagesPerDay,
+                prevPlan.chatUsedToday + by
+              ),
+            };
+      return {
+        ...statsPrev,
+        signalsToday: nextPlan.analysesUsedToday,
+        maxSignalsPerDay: nextPlan.maxAnalysesPerDay,
+        plan: nextPlan,
+      };
+    });
+  }, []);
+
+  const refreshPlan = useCallback(
+    async (opts?: { preferHigherUsage?: boolean }) => {
+      try {
+        applyPlan(await planApi.get(), {
+          preferHigherUsage: opts?.preferHigherUsage ?? true,
+        });
+      } catch {
+        // Non-blocking — limits still enforced server-side.
+      }
+    },
+    [applyPlan]
+  );
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -169,12 +253,15 @@ export default function App() {
       ]);
       setTracked(t);
       setSignals(s);
-      setStats(st);
-      if (st.plan) setPlan(st.plan);
+      if (st.plan) {
+        applyPlan(st.plan, { preferHigherUsage: true });
+      } else {
+        setStats(st);
+      }
     } catch (err) {
       toast.error(`Could not load your history: ${errorMessage(err)}`);
     }
-  }, []);
+  }, [applyPlan]);
 
   /** Loads settings, then resolves the saved favourites into full instruments. */
   const bootstrap = useCallback(async () => {
@@ -213,13 +300,21 @@ export default function App() {
     return () => clearInterval(timer);
   }, [refreshStatus]);
 
+  // Keep desk data fresh without manual refresh: follows, history, plan usage.
   useEffect(() => {
     const timer = setInterval(() => {
       void trackingApi.list().then(setTracked).catch(() => {});
-      void statsApi.get().then(setStats).catch(() => {});
-    }, 30_000);
+      void signalsApi.list(50).then(setSignals).catch(() => {});
+      void statsApi
+        .get()
+        .then((st) => {
+          setStats(st);
+          if (st.plan) applyPlan(st.plan, { preferHigherUsage: true });
+        })
+        .catch(() => {});
+    }, 20_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [applyPlan]);
 
   // ---------------------------------------------------------- market loading
 
@@ -269,6 +364,45 @@ export default function App() {
     setAnalysisError(null);
   }, [instrument?.id, timeframe]);
 
+  /** Prevents double-handling when both the countdown and live poll fire. */
+  const sessionEndHandledRef = useRef<string | null>(null);
+  const sessionResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleWindowEnded = useCallback(
+    (ended: SignalRecord) => {
+      if (sessionEndHandledRef.current === ended.id) return;
+      sessionEndHandledRef.current = ended.id;
+
+      toast.info('Trade window ended. Preparing a fresh Analyse…');
+      void refreshHistory();
+      void refreshPlan();
+
+      if (sessionResetTimerRef.current) clearTimeout(sessionResetTimerRef.current);
+      sessionResetTimerRef.current = setTimeout(() => {
+        setSignal((prev) => (prev?.id === ended.id ? null : prev));
+        setLiveSignal(null);
+        setAnalysisError(null);
+
+        const used = plan?.analysesUsedToday ?? 0;
+        const cap = plan?.maxAnalysesPerDay ?? settings.maxSignalsPerDay;
+        if (aiAvailable && used < cap) {
+          // Automatically open the next Analyse setup so the desk keeps moving.
+          setIsAnalyseSetupOpen(true);
+        } else if (used >= cap) {
+          toast.warning('Daily Analyse limit reached. Come back tomorrow or upgrade later.');
+        }
+      }, 1600);
+    },
+    [
+      refreshHistory,
+      refreshPlan,
+      plan?.analysesUsedToday,
+      plan?.maxAnalysesPerDay,
+      settings.maxSignalsPerDay,
+      aiAvailable,
+    ]
+  );
+
   /**
    * Keeps the on-screen signal honest for the timed trade window.
    *
@@ -314,6 +448,16 @@ export default function App() {
         setQuote((prev) =>
           prev && prev.instrumentId === result.quote.instrumentId ? result.quote : prev
         );
+
+        if (
+          (sessionDone || result.live.lifecycle === 'EXPIRED') &&
+          signal
+        ) {
+          handleWindowEnded({
+            ...signal,
+            tradeIntent: result.tradeIntent ?? signal.tradeIntent,
+          });
+        }
       } catch {
         // A transient failure should not clear a valid verdict; the stale
         // indicator in the header already tells the user data is not flowing.
@@ -334,7 +478,10 @@ export default function App() {
       if (remaining > 0) {
         endTimer = setTimeout(() => {
           void check();
+          if (signal) handleWindowEnded(signal);
         }, remaining + 50);
+      } else if (signal) {
+        handleWindowEnded(signal);
       }
     }
 
@@ -344,7 +491,29 @@ export default function App() {
       if (endTimer) clearTimeout(endTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signal?.id, signal?.tradeIntent?.status, signal?.tradeIntent?.endsAt]);
+  }, [signal?.id, signal?.tradeIntent?.status, signal?.tradeIntent?.endsAt, handleWindowEnded]);
+
+  // Periodically resolve old pending outcomes without a manual Evaluate click.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void signalsApi
+        .evaluate()
+        .then((result) => {
+          if (result.updated > 0) {
+            void refreshHistory();
+            toast.message(`Auto-checked ${result.updated} past signal(s).`);
+          }
+        })
+        .catch(() => {});
+    }, 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [refreshHistory]);
+
+  useEffect(() => {
+    return () => {
+      if (sessionResetTimerRef.current) clearTimeout(sessionResetTimerRef.current);
+    };
+  }, []);
 
   // --------------------------------------------------------------- streaming
 
@@ -472,6 +641,8 @@ export default function App() {
     setSignal(null);
     setLiveSignal(null);
     setAnalysisStage('market');
+    // Show usage climbing as soon as Analyse starts (reverted if the request fails).
+    bumpPlanUsage('analyses');
 
     // Align chart TF with the selected window so streamed candles match the plan.
     if (setup.timeframe !== timeframe) {
@@ -508,17 +679,22 @@ export default function App() {
       else if (action === 'WAIT') toast.warning(message);
       else toast.info(message);
 
+      // Authoritative live usage from the Analyse response (includes this run).
+      if (result.plan) applyPlan(result.plan);
+      sessionEndHandledRef.current = null;
+      if (sessionResetTimerRef.current) {
+        clearTimeout(sessionResetTimerRef.current);
+        sessionResetTimerRef.current = null;
+      }
       void signalsApi.list(50).then(setSignals).catch(() => {});
-      void statsApi.get().then((st) => {
-        setStats(st);
-        if (st.plan) setPlan(st.plan);
-      }).catch(() => {});
-      void refreshPlan();
+      void refreshHistory();
     } catch (err) {
       const message = errorMessage(err);
       setAnalysisError(message);
       setSignal(null); // never leave a stale signal after a failure
       toast.error(message);
+      // Undo the optimistic bump with an exact server count (allow decrease).
+      void refreshPlan({ preferHigherUsage: false });
     } finally {
       stageTimers.forEach(clearTimeout);
       setAnalysisStage('idle');
@@ -612,7 +788,7 @@ export default function App() {
           settings={settings}
           onOpenSettings={() => setIsSettingsOpen(true)}
           activeCount={tracked.filter((t) => t.status === 'ACTIVE').length}
-          signalsToday={stats?.signalsToday ?? 0}
+          signalsToday={plan?.analysesUsedToday ?? stats?.signalsToday ?? 0}
           plan={plan}
         />
 
@@ -683,6 +859,7 @@ export default function App() {
                       isTracking={isTracking}
                       onAnalyze={openAnalyseSetup}
                       onTrack={handleTrack}
+                      onWindowEnded={handleWindowEnded}
                       settings={settings}
                       analysisError={analysisError}
                       aiAvailable={aiAvailable}
@@ -734,7 +911,8 @@ export default function App() {
           timeframe={timeframe}
           aiAvailable={aiAvailable}
           plan={plan}
-          onPlanUsageChange={() => void refreshPlan()}
+          onPlanUsageChange={() => bumpPlanUsage('chat')}
+          onPlanUsageSync={() => void refreshPlan()}
         />
       </div>
     </SidebarProvider>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -52,6 +52,8 @@ interface SignalCardProps {
   isTracking: boolean;
   onAnalyze: () => void;
   onTrack: () => void;
+  /** Fired once when the local trade-window countdown hits zero. */
+  onWindowEnded?: (signal: SignalRecord) => void;
   settings: ServerSettings;
   analysisError: string | null;
   aiAvailable: boolean;
@@ -141,6 +143,7 @@ export const SignalCard: React.FC<SignalCardProps> = ({
   isTracking,
   onAnalyze,
   onTrack,
+  onWindowEnded,
   settings,
   analysisError,
   aiAvailable,
@@ -174,17 +177,36 @@ export const SignalCard: React.FC<SignalCardProps> = ({
       : null;
 
   const [nowTick, setNowTick] = useState(Date.now());
+  const windowEndedNotified = useRef<string | null>(null);
+
   useEffect(() => {
     if (!tradeIntent || tradeIntent.status !== 'ACTIVE' || isSettled) return;
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [tradeIntent?.endsAt, tradeIntent?.status, isSettled]);
 
+  useEffect(() => {
+    windowEndedNotified.current = null;
+  }, [signal?.id]);
+
   const remainingMs =
     tradeIntent && tradeIntent.status === 'ACTIVE'
       ? Math.max(0, tradeIntent.endsAt - nowTick)
       : 0;
-  const windowActive = Boolean(tradeIntent && tradeIntent.status === 'ACTIVE' && !isSettled);
+  const windowActive = Boolean(
+    tradeIntent && tradeIntent.status === 'ACTIVE' && !isSettled && remainingMs > 0
+  );
+  const windowTimedOut =
+    Boolean(tradeIntent && tradeIntent.status === 'ACTIVE' && remainingMs <= 0) ||
+    sessionComplete;
+
+  // Fire as soon as the local countdown hits zero — don't wait for the next poll.
+  useEffect(() => {
+    if (!signal || !onWindowEnded || !windowTimedOut) return;
+    if (windowEndedNotified.current === signal.id) return;
+    windowEndedNotified.current = signal.id;
+    onWindowEnded(signal);
+  }, [signal, windowTimedOut, onWindowEnded]);
 
   return (
     <Card className="border-border bg-card text-card-foreground shadow-sm relative overflow-hidden">
@@ -308,14 +330,19 @@ export const SignalCard: React.FC<SignalCardProps> = ({
                       Live
                     </span>
                   )}
-                  {sessionComplete && (
+                  {(sessionComplete || windowTimedOut) && (
                     <Badge variant="outline" className="text-[10px] border-border">
-                      Session complete
+                      Window ended
                     </Badge>
                   )}
                 </div>
                 <p className={`text-sm font-bold mt-0.5 ${verdict.text}`}>{advice.headline}</p>
                 <p className="text-xs text-foreground/90 mt-1 leading-relaxed">{advice.summary}</p>
+                {(sessionComplete || windowTimedOut) && (
+                  <p className="text-[11px] text-muted-foreground mt-2">
+                    Resetting the desk for a fresh Analyse…
+                  </p>
+                )}
                 {quality && (
                   <p className="text-[11px] text-muted-foreground mt-2 font-mono">
                     Confidence {quality.finalScore.toFixed(0)}%
@@ -338,7 +365,7 @@ export const SignalCard: React.FC<SignalCardProps> = ({
               <span className="text-[11px] font-mono font-bold">
                 {windowActive
                   ? `${formatRemaining(remainingMs)} left`
-                  : sessionComplete || isSettled
+                  : sessionComplete || windowTimedOut || isSettled
                     ? 'Ended'
                     : `${tradeIntent.windowMinutes}m`}
               </span>
@@ -643,15 +670,52 @@ export const SignalCard: React.FC<SignalCardProps> = ({
         {/* Actions */}
         <div className="pt-2 border-t border-border space-y-3">
           {plan && (
-            <p className="text-[11px] text-muted-foreground font-mono">
-              {plan.name} plan controls Analyse · {plan.analysesUsedToday}/
-              {plan.maxAnalysesPerDay} used today · {plan.aiModelLabel}
-            </p>
+            <div
+              className="rounded-lg border border-border/80 bg-muted/30 px-3 py-2.5 space-y-2"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <div className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="font-medium text-foreground">
+                  {plan.name} plan · {plan.aiModelLabel}
+                </span>
+                <span
+                  key={`${plan.analysesUsedToday}-${plan.maxAnalysesPerDay}`}
+                  className={`font-mono font-bold tabular-nums transition-colors ${
+                    analysisBlocked ? 'text-amber-500' : 'text-foreground'
+                  }`}
+                >
+                  {plan.analysesUsedToday}/{plan.maxAnalysesPerDay} used today
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ease-out ${
+                    analysisBlocked ? 'bg-amber-500' : 'bg-foreground/70'
+                  }`}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (plan.analysesUsedToday / Math.max(1, plan.maxAnalysesPerDay)) * 100
+                    )}%`,
+                  }}
+                />
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                {isAnalyzing
+                  ? 'Counting this Analyse against today’s limit…'
+                  : analysisBlocked
+                    ? 'Daily Analyse limit reached — resets tomorrow.'
+                    : `${Math.max(0, plan.maxAnalysesPerDay - plan.analysesUsedToday)} Analyse${
+                        plan.maxAnalysesPerDay - plan.analysesUsedToday === 1 ? '' : 's'
+                      } left today`}
+              </p>
+            </div>
           )}
-          {analysisBlocked && (
+          {analysisBlocked && !isAnalyzing && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-[11px] text-foreground/90">
-              Daily Analyse limit reached on your {plan?.name ?? 'Free'} plan. Limits reset tomorrow.
-              Pro and Max are coming soon for higher caps and stronger models.
+              Daily Analyse limit reached on your {plan?.name ?? 'Free'} plan. Pro and Max are coming
+              soon for higher caps and stronger models.
             </div>
           )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -667,9 +731,11 @@ export const SignalCard: React.FC<SignalCardProps> = ({
                   ? 'Analysing…'
                   : analysisBlocked
                     ? 'LIMIT REACHED'
-                    : signal
-                      ? 'ANALYSE AGAIN'
-                      : 'ANALYSE MARKET'}
+                    : sessionComplete || windowTimedOut
+                      ? 'NEW ANALYSE'
+                      : signal
+                        ? 'ANALYSE AGAIN'
+                        : 'ANALYSE MARKET'}
               </span>
             </Button>
 

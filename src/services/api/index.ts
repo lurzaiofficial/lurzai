@@ -131,6 +131,8 @@ export interface AnalyzeResponse {
   instrument: Instrument;
   notes: string[];
   model: string;
+  /** Live plan usage after this analysis (includes the new signal). */
+  plan: UserPlanView;
 }
 
 export interface LiveSignalResponse {

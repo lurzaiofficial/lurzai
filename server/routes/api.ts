@@ -536,6 +536,9 @@ api.post('/analyze', async (req, res) => {
     };
     store.insertSignal(record);
 
+    // Fresh count after insert so the client can update usage live without a refresh.
+    const analysesUsedToday = store.listSignalsSince(sid, startOfDay()).length;
+
     logger.info('ai: signal generated', {
       instrument: instrument.id,
       timeframe,
@@ -545,9 +548,17 @@ api.post('/analyze', async (req, res) => {
       finalScore: quality.finalScore,
       model: ai.model,
       latencyMs: ai.latencyMs,
+      analysesUsedToday,
     });
 
-    res.json({ signal: record, quote, instrument, notes: ai.notes, model: ai.model });
+    res.json({
+      signal: record,
+      quote,
+      instrument,
+      notes: ai.notes,
+      model: ai.model,
+      plan: buildUserPlanView(sid, analysesUsedToday),
+    });
   } catch (err) {
     handleError(res, err, 'The analysis could not be completed. Please try again.');
   }

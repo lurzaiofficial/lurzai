@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Settings, Cpu, ShieldCheck, Sliders, Info, Database } from 'lucide-react';
+import { Settings, Cpu, ShieldCheck, Sliders, Info, Database, Sparkles } from 'lucide-react';
 import type { ProviderStatus, ServerSettings, Timeframe } from '../types';
 import type { UserPlanView } from '../services/api';
+import { formatAiProvider, formatAiToolName } from '../../shared/plans';
 import {
   Dialog,
   DialogContent,
@@ -81,6 +82,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [form, setForm] = useState<ServerSettings>(settings);
   const [saving, setSaving] = useState(false);
   const analysisCap = plan?.maxAnalysesPerDay ?? 5;
+  const activeModelId = plan?.aiModel || form.aiModel;
+  const activeToolName = formatAiToolName(activeModelId);
+  const activeProvider = formatAiProvider(activeModelId);
 
   // Re-sync on open so the form never shows stale values.
   useEffect(() => {
@@ -236,15 +240,58 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </p>
             </div>
 
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <label className="font-semibold text-foreground">AI model tier</label>
+            <div className="rounded-xl border border-border bg-background p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <div className="h-9 w-9 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                      AI tool in use
+                    </p>
+                    <p className="text-sm font-bold text-foreground mt-0.5">{activeToolName}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {activeProvider} · via OpenRouter · used for Analyse & Ask AI
+                    </p>
+                  </div>
+                </div>
                 {plan && (
-                  <Badge variant="outline" className="text-[10px] border-border">
-                    {plan.name} · {plan.aiModelLabel}
+                  <Badge variant="outline" className="text-[10px] border-border shrink-0">
+                    {plan.name} plan
                   </Badge>
                 )}
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="rounded-lg border border-border/80 bg-muted/40 px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Tier</p>
+                  <p className="font-semibold text-foreground mt-0.5">
+                    {plan?.aiModelLabel ?? 'Basic AI'}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/80 bg-muted/40 px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Model id
+                  </p>
+                  <p className="font-mono text-[11px] text-foreground mt-0.5 break-all">
+                    {activeModelId}
+                  </p>
+                </div>
+              </div>
+
+              {plan && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  {plan.aiTierNote}{' '}
+                  {plan.id === 'free'
+                    ? 'Pro uses a moderate model; Max uses the most powerful models — both coming soon.'
+                    : plan.upgradeNote}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="font-semibold text-foreground">Model override</label>
               {plan && !plan.canChangeModel ? (
                 <>
                   <Input
@@ -254,7 +301,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="font-mono bg-muted/50 border-border text-muted-foreground"
                   />
                   <p className="text-[10px] text-muted-foreground leading-snug">
-                    {plan.aiTierNote} {plan.upgradeNote}
+                    Locked to your {plan.name} plan tool above. Upgrade later to unlock stronger
+                    models.
                   </p>
                 </>
               ) : (
@@ -266,7 +314,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="font-mono bg-background border-border"
                   />
                   <p className="text-[10px] text-muted-foreground">
-                    Must be a model available to the configured service account.
+                    Must be a model available to the configured OpenRouter account.
                   </p>
                 </>
               )}

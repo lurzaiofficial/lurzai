@@ -84,27 +84,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /** Blocks leave-dashboard logout during the sign-in → /app handoff. */
   const enteringDashboardRef = useRef(false);
   const signingOutRef = useRef(false);
+  /** True only after the user has stably used `/app` — prevents refresh false-logouts. */
+  const settledOnDeskRef = useRef(false);
   /** Previous path — logout only when leaving `/app`, not while logging in on `/`. */
   const previousPathRef = useRef(location.pathname);
+  const initialSessionDoneRef = useRef(false);
 
   useEffect(() => {
     clearLegacyLocalAuth();
 
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data }) => {
+    const applySession = (sessionUser: User | null | undefined) => {
       if (!mounted) return;
-      setUser(mapUser(data.session?.user));
+      setUser(mapUser(sessionUser));
       setIsReady(true);
-    });
+      initialSessionDoneRef.current = true;
+    };
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
-      // Ignore spurious clears while we are intentionally entering the desk.
+      // Wait for the first real session resolution so a refresh never sees a
+      // blank user and bounces /app → / (which used to trigger sign-out).
+      if (!initialSessionDoneRef.current && event !== 'INITIAL_SESSION') {
+        return;
+      }
+
       if (event === 'SIGNED_OUT' && enteringDashboardRef.current) return;
+
+      if (event === 'INITIAL_SESSION') {
+        applySession(session?.user);
+        return;
+      }
+
+      if (!initialSessionDoneRef.current) return;
       setUser(mapUser(session?.user));
       setIsReady(true);
+    });
+
+    // Fallback for clients that don't emit INITIAL_SESSION.
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted || initialSessionDoneRef.current) return;
+      applySession(data.session?.user);
     });
 
     return () => {
@@ -113,8 +135,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Sign out when the user leaves the dashboard (not when they land on home
-  // mid-login — that race wiped fresh sessions).
+  // Mark the desk as settled only after we've been on /app with a user briefly.
+  // Refresh remounts with settled=false, so bootstrap path noise can't auto sign-out.
+  useEffect(() => {
+    if (!isReady || !user || !isDashboardPath(location.pathname)) return;
+
+    const timer = window.setTimeout(() => {
+      settledOnDeskRef.current = true;
+      enteringDashboardRef.current = false;
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [isReady, user, location.pathname]);
+
+  // Sign out when the user intentionally leaves the dashboard after it settled.
   useEffect(() => {
     const previous = previousPathRef.current;
     previousPathRef.current = location.pathname;
@@ -123,17 +157,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (enteringDashboardRef.current) return;
     if (signingOutRef.current) return;
     if (isAuthExemptPath(location.pathname)) return;
+    if (!settledOnDeskRef.current) return;
 
     const leftDashboard =
       isDashboardPath(previous) && !isDashboardPath(location.pathname);
 
-    if (!leftDashboard) {
-      if (isDashboardPath(location.pathname)) {
-        enteringDashboardRef.current = false;
-      }
-      return;
-    }
+    if (!leftDashboard) return;
 
+    settledOnDeskRef.current = false;
     signingOutRef.current = true;
     void supabase.auth
       .signOut()

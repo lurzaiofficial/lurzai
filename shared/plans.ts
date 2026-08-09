@@ -116,6 +116,38 @@ export function getPlan(id: PlanId = DEFAULT_PLAN_ID): PlanDefinition {
   return PLANS[id] ?? PLANS.free;
 }
 
+/** Human-readable model name from an OpenRouter id (e.g. google/gemini-2.5-flash). */
+export function formatAiToolName(modelId: string): string {
+  const id = modelId.trim();
+  if (!id) return 'Unknown model';
+  const slash = id.lastIndexOf('/');
+  const raw = slash >= 0 ? id.slice(slash + 1) : id;
+  return raw
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => {
+      if (/^\d/.test(part) || part.toLowerCase() === 'ai') return part;
+      if (/^gpt$/i.test(part)) return 'GPT';
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(' ');
+}
+
+/** Provider label from an OpenRouter id. */
+export function formatAiProvider(modelId: string): string {
+  const id = modelId.trim().toLowerCase();
+  if (id.startsWith('google/')) return 'Google';
+  if (id.startsWith('openai/')) return 'OpenAI';
+  if (id.startsWith('anthropic/')) return 'Anthropic';
+  if (id.startsWith('meta-llama/') || id.startsWith('meta/')) return 'Meta';
+  const slash = id.indexOf('/');
+  if (slash > 0) {
+    const vendor = id.slice(0, slash);
+    return vendor.charAt(0).toUpperCase() + vendor.slice(1);
+  }
+  return 'OpenRouter';
+}
+
 /** Public snapshot returned by the API (no secrets). */
 export interface UserPlanView {
   id: PlanId;

@@ -36,7 +36,10 @@ interface ChatPanelProps {
   timeframe: Timeframe;
   aiAvailable: boolean;
   plan: UserPlanView | null;
+  /** Called when a chat message is consumed (optimistic UI). */
   onPlanUsageChange?: () => void;
+  /** Called after the request finishes so usage can re-sync from the server. */
+  onPlanUsageSync?: () => void;
 }
 
 const STORAGE_KEY = 'tradepilot_chat';
@@ -139,6 +142,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   aiAvailable,
   plan,
   onPlanUsageChange,
+  onPlanUsageSync,
 }) => {
   const chatBlocked = Boolean(plan && plan.chatUsedToday >= plan.maxChatMessagesPerDay);
   const [isOpen, setIsOpen] = useState(false);
@@ -233,6 +237,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       ]);
       setInput('');
       setIsStreaming(true);
+      onPlanUsageChange?.();
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -249,7 +254,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             );
           },
         });
-        onPlanUsageChange?.();
       } catch (err) {
         const message =
           err instanceof ChatStreamError ? err.message : 'Something went wrong. Please try again.';
@@ -260,10 +264,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               : m
           )
         );
-        onPlanUsageChange?.();
       } finally {
         setIsStreaming(false);
         abortRef.current = null;
+        onPlanUsageSync?.();
 
         // Drop an assistant turn that produced nothing at all (e.g. cancelled
         // immediately), so the transcript has no empty bubbles.
@@ -272,7 +276,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         );
       }
     },
-    [messages, instrument?.id, timeframe, isStreaming, plan, onPlanUsageChange]
+    [
+      messages,
+      instrument?.id,
+      timeframe,
+      isStreaming,
+      plan,
+      onPlanUsageChange,
+      onPlanUsageSync,
+    ]
   );
 
   const handleSubmit = (e: React.FormEvent) => {
