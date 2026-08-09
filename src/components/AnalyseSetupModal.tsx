@@ -10,8 +10,12 @@ import { Activity, Clock, Info, Wallet } from 'lucide-react';
 import type { Instrument, Timeframe, TradeSizeUnit } from '../types';
 import {
   ANALYSIS_WINDOW_PRESETS,
+  MAX_WINDOW_MINUTES,
+  MIN_WINDOW_MINUTES,
   type AnalysisWindowId,
+  clampWindowMinutes,
   resolveWindowMinutes,
+  timeframeForWindowMinutes,
 } from '../../shared/analysis/tradeWindow';
 import {
   Dialog,
@@ -47,6 +51,15 @@ function defaultWindowId(chartTimeframe: Timeframe): AnalysisWindowId {
   return '1h';
 }
 
+function defaultCustomMinutes(chartTimeframe: Timeframe): string {
+  if (chartTimeframe === '1m') return '1';
+  if (chartTimeframe === '5m') return '5';
+  if (chartTimeframe === '15m') return '15';
+  if (chartTimeframe === '1h') return '60';
+  if (chartTimeframe === '4h') return '240';
+  return '60';
+}
+
 export const AnalyseSetupModal: React.FC<AnalyseSetupModalProps> = ({
   isOpen,
   onClose,
@@ -55,6 +68,7 @@ export const AnalyseSetupModal: React.FC<AnalyseSetupModalProps> = ({
   onConfirm,
 }) => {
   const [windowId, setWindowId] = useState<AnalysisWindowId>(() => defaultWindowId(chartTimeframe));
+  const [customMinutes, setCustomMinutes] = useState(() => defaultCustomMinutes(chartTimeframe));
   const [sizeAmount, setSizeAmount] = useState('100');
   const [sizeUnit, setSizeUnit] = useState<TradeSizeUnit>('QUOTE');
   const [error, setError] = useState<string | null>(null);
@@ -62,13 +76,34 @@ export const AnalyseSetupModal: React.FC<AnalyseSetupModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     setWindowId(defaultWindowId(chartTimeframe));
+    setCustomMinutes(defaultCustomMinutes(chartTimeframe));
     setError(null);
   }, [isOpen, chartTimeframe]);
 
-  const resolvedMinutes = useMemo(() => resolveWindowMinutes(windowId), [windowId]);
-  const preset = ANALYSIS_WINDOW_PRESETS.find((p) => p.id === windowId)!;
+  const customMinutesNumber = Number(customMinutes);
+  const resolvedMinutes = useMemo(
+    () => resolveWindowMinutes(windowId, Date.now(), customMinutesNumber),
+    [windowId, customMinutesNumber]
+  );
+
+  const analysisTimeframe = useMemo((): Timeframe => {
+    if (windowId === 'custom') return timeframeForWindowMinutes(resolvedMinutes);
+    const preset = ANALYSIS_WINDOW_PRESETS.find((p) => p.id === windowId);
+    return preset?.timeframe ?? timeframeForWindowMinutes(resolvedMinutes);
+  }, [windowId, resolvedMinutes]);
 
   const handleConfirm = () => {
+    if (windowId === 'custom') {
+      if (!Number.isFinite(customMinutesNumber) || customMinutesNumber < MIN_WINDOW_MINUTES) {
+        setError(`Timer must be at least ${MIN_WINDOW_MINUTES} minute.`);
+        return;
+      }
+      if (customMinutesNumber > MAX_WINDOW_MINUTES) {
+        setError(`Timer cannot exceed ${MAX_WINDOW_MINUTES} minutes (24h).`);
+        return;
+      }
+    }
+
     const amount = Number(sizeAmount);
     if (!Number.isFinite(amount) || amount <= 0) {
       setError('Enter a positive amount you intend to trade elsewhere.');
@@ -79,10 +114,13 @@ export const AnalyseSetupModal: React.FC<AnalyseSetupModalProps> = ({
       return;
     }
 
+    const windowMinutes =
+      windowId === 'custom' ? clampWindowMinutes(customMinutesNumber) : resolvedMinutes;
+
     onConfirm({
       windowId,
-      windowMinutes: resolvedMinutes,
-      timeframe: preset.timeframe,
+      windowMinutes,
+      timeframe: analysisTimeframe,
       sizeAmount: amount,
       sizeUnit,
     });
@@ -114,12 +152,20 @@ export const AnalyseSetupModal: React.FC<AnalyseSetupModalProps> = ({
             <div className="grid grid-cols-2 gap-2">
               {ANALYSIS_WINDOW_PRESETS.map((p) => {
                 const active = windowId === p.id;
-                const mins = p.minutes ?? resolvedMinutes;
+                const mins =
+                  p.id === 'custom'
+                    ? Number.isFinite(customMinutesNumber)
+                      ? clampWindowMinutes(customMinutesNumber)
+                      : null
+                    : p.minutes ?? resolvedMinutes;
                 return (
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => setWindowId(p.id)}
+                    onClick={() => {
+                      setWindowId(p.id);
+                      setError(null);
+                    }}
                     className={`text-left rounded-lg border px-3 py-2.5 transition-colors ${
                       active
                         ? 'border-foreground bg-muted'
@@ -129,16 +175,50 @@ export const AnalyseSetupModal: React.FC<AnalyseSetupModalProps> = ({
                     <span className="text-sm font-bold block">{p.label}</span>
                     <span className="text-[10px] text-muted-foreground block mt-0.5">
                       {p.hint}
-                      {p.id === 'session' ? ` · ~${mins}m` : ''}
+                      {p.id === 'session' && mins != null ? ` · ~${mins}m` : ''}
+                      {p.id === 'custom' && active && mins != null ? ` · ${mins}m` : ''}
                     </span>
                   </button>
                 );
               })}
             </div>
+
+            {windowId === 'custom' && (
+              <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
+                <label
+                  htmlFor="custom-timer-minutes"
+                  className="text-xs font-medium text-foreground/80"
+                >
+                  Custom timer (minutes)
+                </label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="custom-timer-minutes"
+                    type="number"
+                    min={MIN_WINDOW_MINUTES}
+                    max={MAX_WINDOW_MINUTES}
+                    step={1}
+                    value={customMinutes}
+                    onChange={(e) => {
+                      setCustomMinutes(e.target.value);
+                      setError(null);
+                    }}
+                    className="font-mono bg-card border-border flex-1"
+                    placeholder={`Min ${MIN_WINDOW_MINUTES}`}
+                    autoFocus
+                  />
+                  <span className="text-xs text-muted-foreground shrink-0">min</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Minimum {MIN_WINDOW_MINUTES} minute. Maximum {MAX_WINDOW_MINUTES} minutes.
+                </p>
+              </div>
+            )}
+
             <p className="text-[10px] text-muted-foreground leading-snug flex items-start gap-1.5">
               <Info className="h-3 w-3 shrink-0 mt-0.5" />
-              Live verdict updates for this window, then stops. Chart timeframe will
-              align to {preset.timeframe} for the analysis.
+              Live verdict updates for {resolvedMinutes}m, then stops. Chart timeframe will
+              align to {analysisTimeframe} for the analysis.
             </p>
           </div>
 

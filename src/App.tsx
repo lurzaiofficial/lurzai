@@ -593,6 +593,10 @@ export default function App() {
             streamState={streamState}
             streamDetail={streamDetail}
             isDataStale={isDataStale}
+            settings={settings}
+            onSaveSettings={async (patch) => {
+              setSettings(await settingsApi.update(patch));
+            }}
           />
 
           <main className="max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-6 flex-1">

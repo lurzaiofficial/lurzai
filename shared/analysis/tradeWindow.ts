@@ -8,15 +8,20 @@
 
 import type { Timeframe, TradeAction, TradeSizeUnit, VerdictLevel, SignalType } from '../types';
 
-export type AnalysisWindowId = '15m' | '1h' | '4h' | 'session';
+/** Minimum advisory trade window (minutes). Custom timers cannot go below this. */
+export const MIN_WINDOW_MINUTES = 1;
+/** Maximum advisory trade window (minutes) — 24 hours. */
+export const MAX_WINDOW_MINUTES = 24 * 60;
+
+export type AnalysisWindowId = '15m' | '1h' | '4h' | 'session' | 'custom';
 
 export interface AnalysisWindowPreset {
   id: AnalysisWindowId;
   label: string;
-  /** Fixed minutes, or null when computed at confirm time (rest of session). */
+  /** Fixed minutes, or null when computed / entered at confirm time. */
   minutes: number | null;
-  /** Chart/analysis timeframe that best matches this window. */
-  timeframe: Timeframe;
+  /** Chart/analysis timeframe that best matches this window (null for custom). */
+  timeframe: Timeframe | null;
   hint: string;
 }
 
@@ -49,7 +54,23 @@ export const ANALYSIS_WINDOW_PRESETS: AnalysisWindowPreset[] = [
     timeframe: '1h',
     hint: 'Until end of your local day',
   },
+  {
+    id: 'custom',
+    label: 'Custom',
+    minutes: null,
+    timeframe: null,
+    hint: 'Set your own timer (min 1m)',
+  },
 ];
+
+/** Pick a chart timeframe that fits a custom window length. */
+export function timeframeForWindowMinutes(minutes: number): Timeframe {
+  if (minutes <= 5) return '1m';
+  if (minutes <= 15) return '5m';
+  if (minutes <= 60) return '15m';
+  if (minutes <= 240) return '1h';
+  return '4h';
+}
 
 /** Minutes remaining until local midnight, clamped to a useful advisory range. */
 export function restOfSessionMinutes(now = Date.now()): number {
@@ -60,7 +81,20 @@ export function restOfSessionMinutes(now = Date.now()): number {
   return Math.max(30, Math.min(12 * 60, raw));
 }
 
-export function resolveWindowMinutes(id: AnalysisWindowId, now = Date.now()): number {
+export function clampWindowMinutes(minutes: number): number {
+  const rounded = Math.round(minutes);
+  if (!Number.isFinite(rounded)) return MIN_WINDOW_MINUTES;
+  return Math.max(MIN_WINDOW_MINUTES, Math.min(MAX_WINDOW_MINUTES, rounded));
+}
+
+export function resolveWindowMinutes(
+  id: AnalysisWindowId,
+  now = Date.now(),
+  customMinutes?: number
+): number {
+  if (id === 'custom') {
+    return clampWindowMinutes(customMinutes ?? 5);
+  }
   const preset = ANALYSIS_WINDOW_PRESETS.find((p) => p.id === id);
   if (!preset) return 60;
   if (preset.minutes !== null) return preset.minutes;

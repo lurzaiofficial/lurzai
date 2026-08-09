@@ -26,6 +26,10 @@ import { buildAdvice, evaluateLive } from '../lib/advice';
 import { evaluatePendingSignals } from '../lib/evaluator';
 import { analyzeMarket } from '../../shared/analysis/indicators';
 import { computeSignalQuality } from '../../shared/analysis/aiSchema';
+import {
+  MAX_WINDOW_MINUTES,
+  MIN_WINDOW_MINUTES,
+} from '../../shared/analysis/tradeWindow';
 import { checkTrackedSignal, closeTracked, computeStats, trackSignal } from '../lib/tracking';
 import { logger } from '../lib/logger';
 import { isEmailConfigured, sendWelcomeEmail } from '../lib/email';
@@ -46,9 +50,6 @@ export const api = Router();
 const VALID_TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const VALID_ASSET_CLASSES: AssetClass[] = ['CRYPTO', 'STOCK', 'FOREX', 'COMMODITY', 'INDEX', 'ETF'];
 const VALID_SIZE_UNITS: TradeSizeUnit[] = ['QUOTE', 'PERCENT'];
-/** Sensible bounds for a timed advisory window (minutes). */
-const MIN_WINDOW_MINUTES = 5;
-const MAX_WINDOW_MINUTES = 24 * 60;
 
 function fail(res: Response, status: number, message: string, detail?: unknown) {
   return res.status(status).json({ error: message, detail: detail ?? undefined });

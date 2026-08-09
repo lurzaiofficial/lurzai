@@ -1,8 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Compass, LogOut, Settings, Sun, Moon, UserRound } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/auth/AuthContext';
 import { ProfileSettingsModal } from '@/components/ProfileSettingsModal';
+import {
+  loadProfilePrefs,
+  PROFILE_PREFS_EVENT,
+} from '@/lib/profilePrefs';
 import { Button } from './ui/button';
 import {
   DropdownMenu,
@@ -14,7 +18,7 @@ import {
 } from './ui/dropdown-menu';
 import { SidebarTrigger } from './ui/sidebar';
 import { ConnectionStatusBar } from './ConnectionStatusBar';
-import type { ConnectionState, ConnectionStatus } from '../types';
+import type { ConnectionState, ConnectionStatus, ServerSettings } from '../types';
 
 interface HeaderProps {
   onOpenSettings: () => void;
@@ -24,6 +28,8 @@ interface HeaderProps {
   streamState: ConnectionState;
   streamDetail: string;
   isDataStale: boolean;
+  settings: ServerSettings;
+  onSaveSettings: (patch: Partial<ServerSettings>) => Promise<void>;
 }
 
 function getInitials(name: string, email: string): string {
@@ -48,11 +54,26 @@ export const Header: React.FC<HeaderProps> = ({
   streamState,
   streamDetail,
   isDataStale,
+  settings,
+  onSaveSettings,
 }) => {
   const { user, signOut } = useAuth();
   const [profileOpen, setProfileOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [compactHeader, setCompactHeader] = useState(
+    () => loadProfilePrefs().compactHeader
+  );
   const initials = user ? getInitials(user.name, user.email) : '';
+
+  useEffect(() => {
+    const sync = () => setCompactHeader(loadProfilePrefs().compactHeader);
+    window.addEventListener(PROFILE_PREFS_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(PROFILE_PREFS_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
 
   const handleSignOut = async () => {
     setSigningOut(true);
@@ -66,25 +87,39 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="border-b border-border bg-card/95 backdrop-blur-md sticky top-0 z-40 px-4 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4 text-card-foreground">
+    <header
+      className={`border-b border-border bg-card/95 backdrop-blur-md sticky top-0 z-40 px-4 lg:px-8 flex flex-wrap items-center justify-between gap-3 text-card-foreground ${
+        compactHeader ? 'py-2' : 'py-3.5 gap-4'
+      }`}
+    >
       <div className="flex items-center gap-3">
         <SidebarTrigger />
-        <div className="h-9 w-9 rounded-md bg-primary text-primary-foreground flex items-center justify-center shrink-0">
-          <Compass className="h-5 w-5" />
+        <div
+          className={`rounded-md bg-primary text-primary-foreground flex items-center justify-center shrink-0 ${
+            compactHeader ? 'h-8 w-8' : 'h-9 w-9'
+          }`}
+        >
+          <Compass className={compactHeader ? 'h-4 w-4' : 'h-5 w-5'} />
         </div>
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="font-semibold text-lg tracking-tight">
+            <h1
+              className={`font-semibold tracking-tight ${
+                compactHeader ? 'text-base' : 'text-lg'
+              }`}
+            >
               LURZ
               <span className="text-muted-foreground font-mono text-xs uppercase px-2 py-0.5 rounded-sm bg-muted border border-border ml-1.5">
                 AI
               </span>
             </h1>
           </div>
-          <p className="text-[11px] text-muted-foreground hidden sm:block">
-            AI trade signals for crypto, stocks, forex and commodities
-            {user?.name ? ` · ${user.name}` : ''}
-          </p>
+          {!compactHeader && (
+            <p className="text-[11px] text-muted-foreground hidden sm:block">
+              AI trade signals for crypto, stocks, forex and commodities
+              {user?.name ? ` · ${user.name}` : ''}
+            </p>
+          )}
         </div>
       </div>
 
@@ -95,7 +130,7 @@ export const Header: React.FC<HeaderProps> = ({
         isDataStale={isDataStale}
       />
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
         <Button
           variant="outline"
           size="icon"
@@ -156,7 +191,14 @@ export const Header: React.FC<HeaderProps> = ({
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <ProfileSettingsModal open={profileOpen} onOpenChange={setProfileOpen} />
+            <ProfileSettingsModal
+              open={profileOpen}
+              onOpenChange={setProfileOpen}
+              theme={theme}
+              onToggleTheme={onToggleTheme}
+              settings={settings}
+              onSaveSettings={onSaveSettings}
+            />
           </>
         )}
       </div>
