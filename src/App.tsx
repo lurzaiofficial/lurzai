@@ -349,6 +349,24 @@ export default function App() {
           if (!prev || prev.instrumentId !== instrumentId) return prev;
           return { ...prev, ...update, fetchedAt: update.fetchedAt ?? Date.now() };
         });
+        // Venues without kline streams (e.g. Coinbase) only poll quotes —
+        // nudge the forming candle so the chart still moves live.
+        const price = update.price;
+        if (!Number.isFinite(price)) return;
+        setCandles((prev) => {
+          if (prev.length === 0) return prev;
+          const last = prev[prev.length - 1];
+          if (last.closed) return prev;
+          return [
+            ...prev.slice(0, -1),
+            {
+              ...last,
+              close: price,
+              high: Math.max(last.high, price),
+              low: Math.min(last.low, price),
+            },
+          ];
+        });
       },
       onCandle: (candle) => {
         // Replace the forming candle, or append when a new one opens.
@@ -605,6 +623,7 @@ export default function App() {
                   <div className="lg:col-span-7 space-y-6">
                     <TradingChart
                       symbol={instrument.displaySymbol}
+                      providerLabel={instrument.providerLabel}
                       timeframe={timeframe}
                       onSelectTimeframe={setTimeframe}
                       candles={candles}

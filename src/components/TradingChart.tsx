@@ -30,12 +30,72 @@ import {
 
 interface TradingChartProps {
   symbol: string;
+  providerLabel?: string;
   timeframe: Timeframe;
   onSelectTimeframe: (tf: Timeframe) => void;
   candles: Candlestick[];
   analysis: MarketAnalysis | null;
   isLoading: boolean;
   theme?: 'dark' | 'light';
+}
+
+/** Drop invalid / non-monotonic bars that crash or scramble lightweight-charts. */
+function sanitizeCandles(candles: Candlestick[]): Candlestick[] {
+  const sorted = [...candles].sort((a, b) => a.time - b.time);
+  const out: Candlestick[] = [];
+  for (const c of sorted) {
+    const time = Math.floor(Number(c.time));
+    const open = Number(c.open);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const close = Number(c.close);
+    const volume = Number(c.volume);
+    if (
+      !Number.isFinite(time) ||
+      time <= 0 ||
+      !Number.isFinite(open) ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      !Number.isFinite(close) ||
+      high < low ||
+      high < Math.max(open, close) ||
+      low > Math.min(open, close)
+    ) {
+      continue;
+    }
+    if (out.length > 0 && time <= out[out.length - 1].time) {
+      // Same timestamp → keep the newer bar (live forming candle).
+      if (time === out[out.length - 1].time) {
+        out[out.length - 1] = {
+          time,
+          open,
+          high,
+          low,
+          close,
+          volume: Number.isFinite(volume) ? volume : 0,
+          closed: c.closed,
+        };
+      }
+      continue;
+    }
+    out.push({
+      time,
+      open,
+      high,
+      low,
+      close,
+      volume: Number.isFinite(volume) ? volume : 0,
+      closed: c.closed,
+    });
+  }
+  return out;
+}
+
+function pricePrecision(price: number): number {
+  if (!Number.isFinite(price) || price === 0) return 2;
+  if (Math.abs(price) >= 1000) return 2;
+  if (Math.abs(price) >= 1) return 4;
+  return 8;
 }
 
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
@@ -56,6 +116,7 @@ interface HoverData {
 
 export const TradingChart: React.FC<TradingChartProps> = ({
   symbol,
+  providerLabel,
   timeframe,
   onSelectTimeframe,
   candles,
@@ -244,11 +305,14 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     });
     bbLowerSeriesRef.current = bbLowerSeries;
 
-    // 4. Volume Sub-chart
+    // 4. Volume Sub-chart — own scale so volume doesn't crush candle prices.
     const volumeSeries = chart.addSeries(HistogramSeries, {
       color: '#27272a',
       priceFormat: { type: 'volume' },
-      priceScaleId: '',
+      priceScaleId: 'volume',
+    });
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.78, bottom: 0 },
     });
     volumeSeriesRef.current = volumeSeries;
 
@@ -346,14 +410,15 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
   // Update Data & Technical Overlays
   useEffect(() => {
-    if (!candles || candles.length === 0 || !candlestickSeriesRef.current) return;
+    if (!candles || candles.length === 0 || !candlestickSeriesRef.current || !chartRef.current) return;
 
-    const sorted = [...candles]
-      .sort((a, b) => a.time - b.time)
-      .filter((item, idx, arr) => idx === 0 || item.time > arr[idx - 1].time);
+    const sorted = sanitizeCandles(candles);
+    if (sorted.length === 0) return;
+
+    const digits = pricePrecision(sorted[sorted.length - 1].close);
 
     const candleData: CandlestickData[] = sorted.map((c) => ({
-      time: c.time as any,
+      time: c.time as CandlestickData['time'],
       open: c.open,
       high: c.high,
       low: c.low,
@@ -377,15 +442,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       prev !== null &&
       prev.seriesKey === seriesKey &&
       prev.firstTime === firstTime &&
+      sorted.length >= prev.length &&
       // Same final candle (in-progress update) or exactly one new candle appended.
-      (lastTime === prev.lastTime || sorted.length === prev.length + 1);
+      (lastTime === prev.lastTime ||
+        (sorted.length === prev.length + 1 && lastTime > prev.lastTime));
 
-    if (isIncrementalTick) {
-      // Push only the final bar; the chart keeps the current viewport.
-      const latest = candleData[candleData.length - 1];
-      if (latest) candlestickSeriesRef.current.update(latest);
-    } else {
-      candlestickSeriesRef.current.setData(candleData);
+    try {
+      if (isIncrementalTick) {
+        const latest = candleData[candleData.length - 1];
+        if (latest) candlestickSeriesRef.current.update(latest);
+      } else {
+        candlestickSeriesRef.current.setData(candleData);
+      }
+    } catch {
+      // Bad tick / race after dispose — force a clean rebuild next pass.
+      lastRenderRef.current = null;
+      return;
     }
 
     lastRenderRef.current = {
@@ -400,15 +472,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     ema50SeriesRef.current?.applyOptions({ visible: showEMA50 });
     ema200SeriesRef.current?.applyOptions({ visible: showEMA200 });
 
-    // Calculate EMAs
-    const closes = sorted.map((c) => c.close);
     const ema20Data: LineData[] = [];
     const ema50Data: LineData[] = [];
     const ema200Data: LineData[] = [];
 
-    let e20 = closes[0];
-    let e50 = closes[0];
-    let e200 = closes[0];
+    let e20 = sorted[0].close;
+    let e50 = sorted[0].close;
+    let e200 = sorted[0].close;
     const k20 = 2 / 21;
     const k50 = 2 / 51;
     const k200 = 2 / 201;
@@ -418,28 +488,34 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       e50 = i === 0 ? c.close : c.close * k50 + e50 * (1 - k50);
       e200 = i === 0 ? c.close : c.close * k200 + e200 * (1 - k200);
 
-      if (i >= 10) ema20Data.push({ time: c.time as any, value: Number(e20.toFixed(2)) });
-      if (i >= 25) ema50Data.push({ time: c.time as any, value: Number(e50.toFixed(2)) });
-      if (i >= 100) ema200Data.push({ time: c.time as any, value: Number(e200.toFixed(2)) });
+      if (i >= 19) ema20Data.push({ time: c.time as LineData['time'], value: Number(e20.toFixed(digits)) });
+      if (i >= 49) ema50Data.push({ time: c.time as LineData['time'], value: Number(e50.toFixed(digits)) });
+      if (i >= 199) ema200Data.push({ time: c.time as LineData['time'], value: Number(e200.toFixed(digits)) });
     });
 
-    // Overlays follow the same rule: update the last point on a tick, rebuild
-    // only when the dataset itself changed.
     const applySeries = (
       series: ISeriesApi<'Line'> | null,
       data: LineData[],
       visible: boolean
     ) => {
-      if (!series || !visible || data.length === 0) return;
-      if (isIncrementalTick) series.update(data[data.length - 1]);
-      else series.setData(data);
+      if (!series) return;
+      series.applyOptions({ visible });
+      if (!visible || data.length === 0) {
+        if (!visible) series.setData([]);
+        return;
+      }
+      try {
+        if (isIncrementalTick) series.update(data[data.length - 1]);
+        else series.setData(data);
+      } catch {
+        series.setData(data);
+      }
     };
 
     applySeries(ema20SeriesRef.current, ema20Data, showEMA20);
     applySeries(ema50SeriesRef.current, ema50Data, showEMA50);
     applySeries(ema200SeriesRef.current, ema200Data, showEMA200);
 
-    // Bollinger Bands Calculation
     bbUpperSeriesRef.current?.applyOptions({ visible: showBollinger });
     bbMiddleSeriesRef.current?.applyOptions({ visible: showBollinger });
     bbLowerSeriesRef.current?.applyOptions({ visible: showBollinger });
@@ -451,86 +527,89 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       const bbMiddleData: LineData[] = [];
       const bbLowerData: LineData[] = [];
 
-      for (let i = 0; i < sorted.length; i++) {
-        if (i < period - 1) continue;
+      for (let i = period - 1; i < sorted.length; i++) {
         const slice = sorted.slice(i - period + 1, i + 1);
-        const sum = slice.reduce((acc, curr) => acc + curr.close, 0);
-        const mean = sum / period;
-        const variance = slice.reduce((acc, curr) => acc + Math.pow(curr.close - mean, 2), 0) / period;
+        const mean = slice.reduce((acc, curr) => acc + curr.close, 0) / period;
+        const variance =
+          slice.reduce((acc, curr) => acc + Math.pow(curr.close - mean, 2), 0) / period;
         const stdDev = Math.sqrt(variance);
-
-        const time = sorted[i].time as any;
-        bbMiddleData.push({ time, value: Number(mean.toFixed(2)) });
-        bbUpperData.push({ time, value: Number((mean + stdDev * multiplier).toFixed(2)) });
-        bbLowerData.push({ time, value: Number((mean - stdDev * multiplier).toFixed(2)) });
+        const time = sorted[i].time as LineData['time'];
+        bbMiddleData.push({ time, value: Number(mean.toFixed(digits)) });
+        bbUpperData.push({ time, value: Number((mean + stdDev * multiplier).toFixed(digits)) });
+        bbLowerData.push({ time, value: Number((mean - stdDev * multiplier).toFixed(digits)) });
       }
 
       applySeries(bbUpperSeriesRef.current, bbUpperData, true);
       applySeries(bbMiddleSeriesRef.current, bbMiddleData, true);
       applySeries(bbLowerSeriesRef.current, bbLowerData, true);
+    } else {
+      bbUpperSeriesRef.current?.setData([]);
+      bbMiddleSeriesRef.current?.setData([]);
+      bbLowerSeriesRef.current?.setData([]);
     }
 
-    // Volume Sub-chart
     volumeSeriesRef.current?.applyOptions({ visible: showVolume });
     if (showVolume) {
       const volumeData: HistogramData[] = sorted.map((c) => ({
-        time: c.time as any,
+        time: c.time as HistogramData['time'],
         value: c.volume,
         color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)',
       }));
-      if (isIncrementalTick && volumeData.length > 0) {
-        volumeSeriesRef.current?.update(volumeData[volumeData.length - 1]);
-      } else {
+      try {
+        if (isIncrementalTick && volumeData.length > 0) {
+          volumeSeriesRef.current?.update(volumeData[volumeData.length - 1]);
+        } else {
+          volumeSeriesRef.current?.setData(volumeData);
+        }
+      } catch {
         volumeSeriesRef.current?.setData(volumeData);
       }
+    } else {
+      volumeSeriesRef.current?.setData([]);
     }
 
-    // Support & Resistance Price Lines
-    if (candlestickSeriesRef.current) {
-      if (supportLineRef.current) {
-        candlestickSeriesRef.current.removePriceLine(supportLineRef.current);
-        supportLineRef.current = null;
-      }
-      if (resistanceLineRef.current) {
-        candlestickSeriesRef.current.removePriceLine(resistanceLineRef.current);
-        resistanceLineRef.current = null;
-      }
-
-      if (showSRLevels && indicators) {
-        if (indicators.support) {
-          supportLineRef.current = candlestickSeriesRef.current.createPriceLine({
-            price: indicators.support,
-            color: '#10b981',
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: 'SUP',
-          });
-        }
-        if (indicators.resistance) {
-          resistanceLineRef.current = candlestickSeriesRef.current.createPriceLine({
-            price: indicators.resistance,
-            color: '#f43f5e',
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: 'RES',
-          });
-        }
-      }
-    }
-
-    /**
-     * Only refit when the dataset actually changed AND the user has not taken
-     * control of the viewport.
-     *
-     * Previously this ran unconditionally, so every streaming tick snapped the
-     * chart back to the full range and destroyed any zoom or pan.
-     */
     if (!isIncrementalTick && !userInteractedRef.current) {
       chartRef.current?.timeScale().fitContent();
     }
-  }, [candles, seriesKey, showEMA20, showEMA50, showEMA200, showBollinger, showSRLevels, showVolume, indicators]);
+  }, [candles, seriesKey, showEMA20, showEMA50, showEMA200, showBollinger, showVolume]);
+
+  // Support / resistance lines — update only when levels or toggle change (not every tick).
+  useEffect(() => {
+    const series = candlestickSeriesRef.current;
+    if (!series) return;
+
+    if (supportLineRef.current) {
+      series.removePriceLine(supportLineRef.current);
+      supportLineRef.current = null;
+    }
+    if (resistanceLineRef.current) {
+      series.removePriceLine(resistanceLineRef.current);
+      resistanceLineRef.current = null;
+    }
+
+    if (!showSRLevels || !indicators) return;
+
+    if (indicators.support && Number.isFinite(indicators.support)) {
+      supportLineRef.current = series.createPriceLine({
+        price: indicators.support,
+        color: '#10b981',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: 'SUP',
+      });
+    }
+    if (indicators.resistance && Number.isFinite(indicators.resistance)) {
+      resistanceLineRef.current = series.createPriceLine({
+        price: indicators.resistance,
+        color: '#f43f5e',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: 'RES',
+      });
+    }
+  }, [showSRLevels, indicators?.support, indicators?.resistance, seriesKey, isExpanded, theme]);
 
   /** Explicit user action: refit and hand control back to auto-fitting. */
   const handleResetZoom = () => {
@@ -550,7 +629,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           <div className="flex items-center gap-2">
             <span className="font-mono font-bold text-sm text-foreground tracking-tight">{symbol}</span>
             <Badge variant="outline" className="text-[10px] font-mono border-border text-muted-foreground">
-              BINANCE SPOT
+              {(providerLabel || 'MARKET').toUpperCase()}
             </Badge>
             {inModal && (
               <Badge className="bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-[10px] font-mono">
@@ -795,16 +874,19 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
   return (
     <>
-      {/* Standard In-Dashboard Card Container */}
-      <div className="bg-card border border-border text-card-foreground rounded-xl p-4 shadow-sm flex flex-col gap-3.5 relative transition-colors duration-150">
-        {renderChartUI(false)}
-      </div>
+      {/*
+        Only one chart host mounts at a time. Sharing a single ref between the
+        card and the expand modal previously left a blank / broken canvas.
+      */}
+      {!isExpanded && (
+        <div className="bg-card border border-border text-card-foreground rounded-xl p-4 shadow-sm flex flex-col gap-3.5 relative transition-colors duration-150">
+          {renderChartUI(false)}
+        </div>
+      )}
 
-      {/* Fullscreen Expandable Chart Modal Overlay with Framer Motion Animation */}
       <AnimatePresence>
         {isExpanded && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 lg:p-8">
-            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -814,7 +896,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               className="fixed inset-0 bg-black/70 backdrop-blur-md"
             />
 
-            {/* Animated Chart Modal Card */}
             <motion.div
               initial={{ scale: 0.95, opacity: 0, y: 15 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -822,7 +903,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               transition={{ type: 'spring', stiffness: 300, damping: 28 }}
               className="relative w-full max-w-7xl h-[88vh] bg-card border border-border text-card-foreground rounded-2xl p-5 shadow-2xl z-10 flex flex-col overflow-hidden"
             >
-              {/* Close Button top-right */}
               <button
                 onClick={() => setIsExpanded(false)}
                 className="absolute top-4 right-4 z-30 p-1.5 rounded-lg bg-muted border border-border text-muted-foreground hover:text-foreground transition-colors"

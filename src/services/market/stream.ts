@@ -130,10 +130,11 @@ export class MarketStream {
   }
 
   private handleBinance(payload: any): void {
-    const data = payload?.data;
-    if (!data) return;
+    // Combined streams wrap the event in `{ stream, data }`; single `/ws` does not.
+    const data = payload?.data ?? payload;
+    if (!data || typeof data !== 'object') return;
 
-    if (data.e === '24hrTicker') {
+    if (data.e === '24hrTicker' || data.e === '24hrMiniTicker') {
       this.handlers.onQuote?.({
         price: parseFloat(data.c),
         change24h: parseFloat(data.p),
@@ -224,6 +225,7 @@ export class MarketStream {
   /** REST polling for providers without a public browser feed. */
   private startPolling(intervalMs: number, detail: string): void {
     this.setState('CONNECTED', detail);
+    let tick = 0;
 
     const poll = async () => {
       const generation = this.generation;
@@ -233,6 +235,15 @@ export class MarketStream {
         this.lastMessageAt = Date.now();
         this.setStale(false);
         this.handlers.onQuote?.(quote);
+
+        // Refresh the latest candle every few polls so the chart stays aligned.
+        tick += 1;
+        if (tick === 1 || tick % 3 === 0) {
+          const candles = await marketApi.getCandles(this.instrumentId, this.timeframe, 2);
+          if (generation !== this.generation || this.disposed) return;
+          const latest = candles[candles.length - 1];
+          if (latest) this.handlers.onCandle?.(latest);
+        }
       } catch {
         if (generation !== this.generation) return;
         // Report the failure honestly rather than silently showing old data.
