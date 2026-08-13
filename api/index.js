@@ -1751,12 +1751,12 @@ async function requestAIAnalysis(params) {
       },
       body: JSON.stringify({
         system_instruction: {
-          parts: { text: SYSTEM_PROMPT }
+          parts: [{ text: SYSTEM_PROMPT }]
         },
         contents: [
           {
             role: "user",
-            parts: { text: params.userPrompt }
+            parts: [{ text: params.userPrompt }]
           }
         ],
         generationConfig: {

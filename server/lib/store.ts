@@ -254,6 +254,45 @@ class Store {
     this.persist();
     return this.db.usage[userId]!.chatCount;
   }
+
+  // ---------------------------------------------------------------- analysis usage
+
+  getAnalysisUsageToday(userId: string, now = Date.now()): number {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== utcDayKey(now)) return 0;
+    // chatCount is repurposed for chat only; store an analysesCount field instead
+    // Lazily migrate old rows.
+    return (row as any).analysesCount || 0;
+  }
+
+  incrementAnalysisUsage(userId: string, now = Date.now()): number {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    let row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) {
+      row = { dayKey, chatCount: (row && row.dayKey === dayKey ? row.chatCount : 0) } as any;
+      (row as any).analysesCount = 1;
+      this.db.usage[userId] = row as any;
+    } else {
+      (row as any).analysesCount = ((row as any).analysesCount || 0) + 1;
+    }
+    this.persist();
+    return (this.db.usage[userId] as any).analysesCount;
+  }
+
+  decrementAnalysisUsage(userId: string, now = Date.now()): number {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) return 0;
+    (row as any).analysesCount = Math.max(0, ((row as any).analysesCount || 0) - 1);
+    this.persist();
+    return (row as any).analysesCount;
+  }
 }
 
 function push<T>(map: Map<string, T[]>, key: string, value: T): void {
