@@ -1592,7 +1592,7 @@ function computeSignalQuality(analysis, ai) {
 }
 
 // server/lib/ai.ts
-var GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+var GEMINI_URL = process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 var AIError = class extends Error {
   constructor(message, detail) {
     super(message);
@@ -1824,7 +1824,7 @@ async function requestAIAnalysis(params) {
 }
 
 // server/lib/chat.ts
-var GEMINI_URL2 = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent";
+var GEMINI_URL2 = process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent";
 var ChatError = class extends Error {
   constructor(message) {
     super(message);

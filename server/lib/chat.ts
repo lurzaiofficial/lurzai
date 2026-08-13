@@ -16,7 +16,7 @@ import { logger } from './logger';
 import { resolveAppUrl } from './appUrl';
 import type { AssetClass, MarketAnalysis, Quote, SignalRecord } from '../../shared/types';
 
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent';
+const GEMINI_URL = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent';
 
 export class ChatError extends Error {
   constructor(message: string) {

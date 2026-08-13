@@ -19,7 +19,7 @@ import type {
   Quote,
 } from '../../shared/types';
 
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_URL = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 export class AIError extends Error {
   constructor(message: string, readonly detail?: string[]) {
