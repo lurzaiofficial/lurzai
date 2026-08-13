@@ -233,12 +233,12 @@ export async function requestAIAnalysis(params: {
 
   try {
     const url = new URL(GEMINI_URL);
-    url.searchParams.set('key', apiKey);
 
     res = await fetch(url.toString(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         system_instruction: {

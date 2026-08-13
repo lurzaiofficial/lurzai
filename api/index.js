@@ -1742,11 +1742,12 @@ async function requestAIAnalysis(params) {
   const timer = setTimeout(() => controller.abort(), 45e3);
   try {
     const url = new URL(GEMINI_URL);
-    url.searchParams.set("key", apiKey);
+
     res = await fetch(url.toString(), {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         system_instruction: {
@@ -1926,10 +1927,11 @@ async function streamChat(params) {
   ];
   let res;
   try {
-    res = await fetch(`${GEMINI_URL2}?key=${encodeURIComponent(apiKey)}`, {
+    res = await fetch(GEMINI_URL2, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         system_instruction: {

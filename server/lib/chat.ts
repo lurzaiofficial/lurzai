@@ -163,10 +163,11 @@ export async function streamChat(params: {
 
   let res: Response;
   try {
-    res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(apiKey)}`, {
+    res = await fetch(GEMINI_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         system_instruction: {
