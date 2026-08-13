@@ -1,7 +1,7 @@
 /**
- * AI analysis service (OpenRouter).
+ * AI analysis service (Google Gemini).
  *
- * The API key is supplied by the OPERATOR via OPENROUTER_API_KEY and never
+ * The API key is supplied by the OPERATOR via GEMINI_API_KEY and never
  * leaves the server. End users do not provide keys and can never see this one.
  *
  * Validation is strict: a malformed response is an error, not something to
@@ -19,7 +19,7 @@ import type {
   Quote,
 } from '../../shared/types';
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 export class AIError extends Error {
   constructor(message: string, readonly detail?: string[]) {
@@ -30,7 +30,7 @@ export class AIError extends Error {
 
 /** True when the operator has configured a key. */
 export function isAIConfigured(): boolean {
-  return Boolean(process.env.OPENROUTER_API_KEY);
+  return Boolean(process.env.GEMINI_API_KEY);
 }
 
 /**
@@ -219,7 +219,7 @@ export async function requestAIAnalysis(params: {
   userPrompt: string;
   marketPrice: number;
 }): Promise<AIRequestResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     // Operator misconfiguration; the user cannot fix this, so say so plainly.
     throw new AIError('AI analysis is not available right now. The service is missing its configuration.');
@@ -232,23 +232,29 @@ export async function requestAIAnalysis(params: {
   const timer = setTimeout(() => controller.abort(), 45000);
 
   try {
-    res = await fetch(OPENROUTER_URL, {
+    const url = new URL(GEMINI_URL);
+    url.searchParams.set('key', apiKey);
+
+    res = await fetch(url.toString(), {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'HTTP-Referer': resolveAppUrl(),
-        'X-Title': 'LURZ AI',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: params.model,
-        temperature: params.temperature,
-        max_tokens: 1200,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: params.userPrompt },
+        system_instruction: {
+          parts: { text: SYSTEM_PROMPT },
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: { text: params.userPrompt },
+          },
         ],
+        generationConfig: {
+          temperature: params.temperature,
+          maxOutputTokens: 1200,
+          responseMimeType: 'application/json',
+        },
       }),
       signal: controller.signal,
     });
@@ -265,10 +271,9 @@ export async function requestAIAnalysis(params: {
 
   if (!res.ok) {
     // Technical detail is logged; the user gets something actionable.
-    logger.error('ai: openrouter request failed', { status: res.status, body: text.slice(0, 400) });
+    logger.error('ai: gemini request failed', { status: res.status, body: text.slice(0, 400) });
 
-    if (res.status === 401) throw new AIError('AI analysis is unavailable: the service key was rejected.');
-    if (res.status === 402) throw new AIError('AI analysis is temporarily unavailable: the service has run out of credit.');
+    if (res.status === 401 || res.status === 403) throw new AIError('AI analysis is unavailable: the service key was rejected.');
     if (res.status === 429) throw new AIError('Too many analysis requests right now. Please wait a moment and try again.');
     if (res.status === 404) throw new AIError(`The configured AI model "${params.model}" is not available.`);
     throw new AIError('The AI service returned an error. Please try again.');
@@ -276,9 +281,10 @@ export async function requestAIAnalysis(params: {
 
   let content: string;
   try {
-    content = JSON.parse(text)?.choices?.[0]?.message?.content ?? '';
+    const parsed = JSON.parse(text);
+    content = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   } catch {
-    logger.error('ai: non-JSON envelope from openrouter', { body: text.slice(0, 400) });
+    logger.error('ai: non-JSON envelope from gemini', { body: text.slice(0, 400) });
     throw new AIError('The AI service returned an unreadable response.');
   }
 

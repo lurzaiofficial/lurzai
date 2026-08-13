@@ -35,6 +35,8 @@ const SECRET_KEYS = new Set([
   'cookie',
   'openrouterapikey',
   'openrouter_api_key',
+  'geminiapikey',
+  'gemini_api_key',
   'resendapikey',
   'resend_api_key',
   'privatekey',
