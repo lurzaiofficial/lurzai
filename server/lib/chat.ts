@@ -16,7 +16,7 @@ import { logger } from './logger';
 import { resolveAppUrl } from './appUrl';
 import type { AssetClass, MarketAnalysis, Quote, SignalRecord } from '../../shared/types';
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const GEMINI_URL = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent';
 
 export class ChatError extends Error {
   constructor(message: string) {
@@ -146,35 +146,70 @@ export async function streamChat(params: {
   onDelta: (text: string) => void;
   signal?: AbortSignal;
 }): Promise<{ full: string; latencyMs: number }> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new ChatError('Chat is unavailable: this server has no AI service configured.');
   }
 
   const started = Date.now();
 
+  // Build Gemini request format with system instruction
+  const contents = [
+    ...params.messages.map((msg) => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }],
+    })),
+  ];
+
   let res: Response;
   try {
-    res = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'HTTP-Referer': resolveAppUrl(),
-        'X-Title': 'LURZ AI',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: params.model,
-        temperature: params.temperature,
-        max_tokens: 1500,
-        stream: true,
+    if (process.env.AI_PROVIDER === 'openrouter') {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) throw new ChatError('Chat is unavailable: OPENROUTER_API_KEY is not configured.');
+      const url = process.env.GEMINI_BASE_URL || 'https://api.openrouter.ai/v1/chat/completions';
+      // OpenRouter may not stream the same way; do a single request and deliver the full text
+      const body = {
+        model: params.model || 'gpt-4o-mini',
         messages: [
           { role: 'system', content: params.systemPrompt },
-          ...params.messages,
+          ...params.messages.map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content })),
         ],
-      }),
-      signal: params.signal,
-    });
+        temperature: params.temperature,
+        max_tokens: 1500,
+      };
+
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: params.signal,
+      });
+    } else {
+      res = await fetch(GEMINI_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            role: 'user',
+            parts: [{ text: params.systemPrompt }],
+          },
+          contents,
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1500,
+            topP: 0.95,
+            topK: 40,
+          },
+        }),
+        signal: params.signal,
+      });
+    }
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw new ChatError('Cancelled.');
     throw new ChatError('Could not reach the AI service. Please try again.');
@@ -182,12 +217,27 @@ export async function streamChat(params: {
 
   if (!res.ok) {
     const body = await res.text();
-    logger.error('chat: openrouter request failed', { status: res.status, body: body.slice(0, 300) });
+    logger.error('chat: provider request failed', { status: res.status, body: body.slice(0, 300), provider: process.env.AI_PROVIDER || 'gemini' });
 
-    if (res.status === 401) throw new ChatError('Chat is unavailable: the service key was rejected.');
-    if (res.status === 402) throw new ChatError('Chat is temporarily unavailable: the service has run out of credit.');
+    if (res.status === 401 || res.status === 403)
+      throw new ChatError('Chat is unavailable: the service key was rejected.');
     if (res.status === 429) throw new ChatError('Too many messages right now. Please wait a moment.');
     throw new ChatError('The AI service returned an error. Please try again.');
+  }
+
+  if (process.env.AI_PROVIDER === 'openrouter') {
+    // Non-streaming response: deliver full content in one go
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      const content = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.text ?? '';
+      if (!content) throw new Error('empty');
+      params.onDelta(content);
+      return { full: content, latencyMs: Date.now() - started };
+    } catch (e) {
+      logger.error('chat: non-JSON envelope from provider', { body: text.slice(0, 400) });
+      throw new ChatError('The AI service returned an unreadable response.');
+    }
   }
 
   if (!res.body) throw new ChatError('The AI service returned an empty response.');
@@ -204,26 +254,22 @@ export async function streamChat(params: {
 
       buffer += decoder.decode(value, { stream: true });
 
-      // SSE frames are separated by a blank line; a frame may span chunks, so
-      // the trailing partial is kept in the buffer.
-      const frames = buffer.split('\n\n');
-      buffer = frames.pop() ?? '';
+      // Gemini streams newline-delimited JSON objects
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-      for (const frame of frames) {
-        const line = frame.split('\n').find((l) => l.startsWith('data:'));
-        if (!line) continue;
-
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') continue;
+      for (const line of lines) {
+        if (!line.trim()) continue;
 
         try {
-          const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content;
+          const chunk = JSON.parse(line);
+          const delta = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (typeof delta === 'string' && delta.length > 0) {
             full += delta;
             params.onDelta(delta);
           }
         } catch {
-          // OpenRouter interleaves keep-alive comments; ignore unparseable frames.
+          // Ignore unparseable frames
         }
       }
     }

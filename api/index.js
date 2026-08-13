@@ -136,6 +136,8 @@ var SECRET_KEYS = /* @__PURE__ */ new Set([
   "cookie",
   "openrouterapikey",
   "openrouter_api_key",
+  "geminiapikey",
+  "gemini_api_key",
   "resendapikey",
   "resend_api_key",
   "privatekey",
@@ -1428,19 +1430,6 @@ async function searchInstruments(query, options = {}) {
   return results;
 }
 
-// server/lib/appUrl.ts
-function resolveAppUrl() {
-  const configured = process.env.APP_URL?.trim();
-  if (configured) return configured.replace(/\/$/, "");
-  const vercelHost = process.env.VERCEL_URL?.trim();
-  if (vercelHost) {
-    const host = vercelHost.replace(/^https?:\/\//, "").replace(/\/$/, "");
-    return `https://${host}`;
-  }
-  const port = process.env.PORT || "3000";
-  return `http://localhost:${port}`;
-}
-
 // shared/analysis/aiSchema.ts
 var SIGNALS = ["BUY", "SELL", "HOLD"];
 var TRENDS = ["BULLISH", "BEARISH", "NEUTRAL"];
@@ -1603,7 +1592,7 @@ function computeSignalQuality(analysis, ai) {
 }
 
 // server/lib/ai.ts
-var OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+var GEMINI_URL = process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 var AIError = class extends Error {
   constructor(message, detail) {
     super(message);
@@ -1612,7 +1601,7 @@ var AIError = class extends Error {
   }
 };
 function isAIConfigured() {
-  return Boolean(process.env.OPENROUTER_API_KEY);
+  return Boolean(process.env.GEMINI_API_KEY);
 }
 var SYSTEM_PROMPT = `You are a careful market ANALYSIS ASSISTANT inside a trading-signal application. Many of your users are BEGINNERS with no trading experience, and they rely on you to tell them honestly whether a trade is worth taking.
 
@@ -1743,35 +1732,65 @@ The user's minimum acceptable risk/reward is ${params.minRiskReward}. If you can
 Analyse this data and respond with the required JSON object only.`;
 }
 async function requestAIAnalysis(params) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new AIError("AI analysis is not available right now. The service is missing its configuration.");
-  }
+  const provider = process.env.AI_PROVIDER || "gemini";
   const started = Date.now();
   let res;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45e3);
   try {
-    res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": resolveAppUrl(),
-        "X-Title": "LURZ AI",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: params.model,
-        temperature: params.temperature,
-        max_tokens: 1200,
-        response_format: { type: "json_object" },
+    if (provider === "openrouter") {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) throw new AIError("AI analysis is not available: OPENROUTER_API_KEY is not configured.");
+      const url = process.env.GEMINI_BASE_URL || "https://api.openrouter.ai/v1/chat/completions";
+      const body = {
+        model: params.model || "gpt-4o-mini",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: params.userPrompt }
-        ]
-      }),
-      signal: controller.signal
-    });
+        ],
+        temperature: params.temperature,
+        max_tokens: 1200
+      };
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+    } else {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new AIError("AI analysis is not available right now. The service is missing its configuration.");
+      }
+      const url = new URL(GEMINI_URL);
+      res = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: SYSTEM_PROMPT }]
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: params.userPrompt }]
+            }
+          ],
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1200,
+            responseMimeType: "application/json"
+          }
+        }),
+        signal: controller.signal
+      });
+    }
   } catch (err) {
     if (err.name === "AbortError") {
       throw new AIError("The analysis took too long and was cancelled. Please try again.");
@@ -1782,18 +1801,24 @@ async function requestAIAnalysis(params) {
   }
   const text = await res.text();
   if (!res.ok) {
-    logger.error("ai: openrouter request failed", { status: res.status, body: text.slice(0, 400) });
-    if (res.status === 401) throw new AIError("AI analysis is unavailable: the service key was rejected.");
-    if (res.status === 402) throw new AIError("AI analysis is temporarily unavailable: the service has run out of credit.");
+    logger.error("ai: provider request failed", { status: res.status, body: text.slice(0, 400), provider });
+    if (res.status === 401 || res.status === 403) throw new AIError("AI analysis is unavailable: the service key was rejected.");
     if (res.status === 429) throw new AIError("Too many analysis requests right now. Please wait a moment and try again.");
     if (res.status === 404) throw new AIError(`The configured AI model "${params.model}" is not available.`);
     throw new AIError("The AI service returned an error. Please try again.");
   }
   let content;
   try {
-    content = JSON.parse(text)?.choices?.[0]?.message?.content ?? "";
-  } catch {
-    logger.error("ai: non-JSON envelope from openrouter", { body: text.slice(0, 400) });
+    if (provider === "openrouter") {
+      const parsed2 = JSON.parse(text);
+      content = parsed2?.choices?.[0]?.message?.content ?? parsed2?.choices?.[0]?.message ?? parsed2?.choices?.[0]?.text ?? "";
+      if (typeof content === "object") content = content?.content ?? "";
+    } else {
+      const parsed2 = JSON.parse(text);
+      content = parsed2?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    }
+  } catch (e) {
+    logger.error("ai: non-JSON envelope from provider", { body: text.slice(0, 400), provider });
     throw new AIError("The AI service returned an unreadable response.");
   }
   const parsed = extractJson(content);
@@ -1829,7 +1854,7 @@ async function requestAIAnalysis(params) {
 }
 
 // server/lib/chat.ts
-var OPENROUTER_URL2 = "https://openrouter.ai/api/v1/chat/completions";
+var GEMINI_URL2 = process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent";
 var ChatError = class extends Error {
   constructor(message) {
     super(message);
@@ -1919,44 +1944,88 @@ function buildChatContext(params) {
   return lines.join("\n");
 }
 async function streamChat(params) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new ChatError("Chat is unavailable: this server has no AI service configured.");
   }
   const started = Date.now();
+  const contents = [
+    ...params.messages.map((msg) => ({
+      role: msg.role === "user" ? "user" : "model",
+      parts: [{ text: msg.content }]
+    }))
+  ];
   let res;
   try {
-    res = await fetch(OPENROUTER_URL2, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": resolveAppUrl(),
-        "X-Title": "LURZ AI",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: params.model,
-        temperature: params.temperature,
-        max_tokens: 1500,
-        stream: true,
+    if (process.env.AI_PROVIDER === "openrouter") {
+      const apiKey2 = process.env.OPENROUTER_API_KEY;
+      if (!apiKey2) throw new ChatError("Chat is unavailable: OPENROUTER_API_KEY is not configured.");
+      const url = process.env.GEMINI_BASE_URL || "https://api.openrouter.ai/v1/chat/completions";
+      const body = {
+        model: params.model || "gpt-4o-mini",
         messages: [
           { role: "system", content: params.systemPrompt },
-          ...params.messages
-        ]
-      }),
-      signal: params.signal
-    });
+          ...params.messages.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }))
+        ],
+        temperature: params.temperature,
+        max_tokens: 1500
+      };
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey2}`
+        },
+        body: JSON.stringify(body),
+        signal: params.signal
+      });
+    } else {
+      res = await fetch(GEMINI_URL2, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            role: "user",
+            parts: [{ text: params.systemPrompt }]
+          },
+          contents,
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1500,
+            topP: 0.95,
+            topK: 40
+          }
+        }),
+        signal: params.signal
+      });
+    }
   } catch (err) {
     if (err.name === "AbortError") throw new ChatError("Cancelled.");
     throw new ChatError("Could not reach the AI service. Please try again.");
   }
   if (!res.ok) {
     const body = await res.text();
-    logger.error("chat: openrouter request failed", { status: res.status, body: body.slice(0, 300) });
-    if (res.status === 401) throw new ChatError("Chat is unavailable: the service key was rejected.");
-    if (res.status === 402) throw new ChatError("Chat is temporarily unavailable: the service has run out of credit.");
+    logger.error("chat: provider request failed", { status: res.status, body: body.slice(0, 300), provider: process.env.AI_PROVIDER || "gemini" });
+    if (res.status === 401 || res.status === 403)
+      throw new ChatError("Chat is unavailable: the service key was rejected.");
     if (res.status === 429) throw new ChatError("Too many messages right now. Please wait a moment.");
     throw new ChatError("The AI service returned an error. Please try again.");
+  }
+  if (process.env.AI_PROVIDER === "openrouter") {
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      const content = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.text ?? "";
+      if (!content) throw new Error("empty");
+      params.onDelta(content);
+      return { full: content, latencyMs: Date.now() - started };
+    } catch (e) {
+      logger.error("chat: non-JSON envelope from provider", { body: text.slice(0, 400) });
+      throw new ChatError("The AI service returned an unreadable response.");
+    }
   }
   if (!res.body) throw new ChatError("The AI service returned an empty response.");
   const reader = res.body.getReader();
@@ -1968,15 +2037,13 @@ async function streamChat(params) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const line = frame.split("\n").find((l) => l.startsWith("data:"));
-        if (!line) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") continue;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
         try {
-          const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content;
+          const chunk = JSON.parse(line);
+          const delta = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (typeof delta === "string" && delta.length > 0) {
             full += delta;
             params.onDelta(delta);
@@ -2305,12 +2372,14 @@ var DEFAULT_SERVER_SETTINGS = {
   minSignalQuality: 60,
   minRiskReward: 1.5,
   accountRiskPercent: 1,
-  maxSignalsPerDay: 25,
+  /** Free-tier default; paid plans raise this when billing ships. */
+  maxSignalsPerDay: 5,
   cooldownMinutes: 0,
   requireStopLoss: true,
   maxMarketDataAgeSeconds: 120,
   defaultTimeframe: "1h",
-  favourites: ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+  favourites: ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"],
+  preferredCurrency: "USD"
 };
 
 // server/lib/store.ts
@@ -2321,11 +2390,15 @@ function dbFile() {
   return path.join(dataDir(), "tradepilot.json");
 }
 var EMPTY_DB = {
-  version: 2,
+  version: 3,
   settings: {},
   signals: [],
-  tracked: []
+  tracked: [],
+  usage: {}
 };
+function utcDayKey(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10);
+}
 var Store = class {
   constructor() {
     this.db = structuredClone(EMPTY_DB);
@@ -2469,6 +2542,60 @@ var Store = class {
   }
   listActiveTracked(userId) {
     return this.listTracked(userId).filter((t) => t.status === "ACTIVE");
+  }
+  // ------------------------------------------------------------------- usage
+  getChatUsageToday(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== utcDayKey(now)) return 0;
+    return row.chatCount;
+  }
+  incrementChatUsage(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) {
+      this.db.usage[userId] = { dayKey, chatCount: 1 };
+    } else {
+      row.chatCount += 1;
+    }
+    this.persist();
+    return this.db.usage[userId].chatCount;
+  }
+  // ---------------------------------------------------------------- analysis usage
+  getAnalysisUsageToday(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== utcDayKey(now)) return 0;
+    return row.analysesCount || 0;
+  }
+  incrementAnalysisUsage(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    let row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) {
+      row = { dayKey, chatCount: row && row.dayKey === dayKey ? row.chatCount : 0 };
+      row.analysesCount = 1;
+      this.db.usage[userId] = row;
+    } else {
+      row.analysesCount = (row.analysesCount || 0) + 1;
+    }
+    this.persist();
+    return this.db.usage[userId].analysesCount;
+  }
+  decrementAnalysisUsage(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) return 0;
+    row.analysesCount = Math.max(0, (row.analysesCount || 0) - 1);
+    this.persist();
+    return row.analysesCount;
   }
 };
 function push(map, key, value) {
@@ -2832,6 +2959,136 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// shared/analysis/tradeWindow.ts
+var MIN_WINDOW_MINUTES = 1;
+var MAX_WINDOW_MINUTES = 24 * 60;
+
+// shared/plans.ts
+var PLANS = {
+  free: {
+    id: "free",
+    name: "Free",
+    tagline: "Learn markets with a solid basic AI model",
+    priceMonthly: 0,
+    priceAnnual: 0,
+    availability: "available",
+    aiModel: "google/gemini-2.5-flash",
+    aiModelLabel: "Basic AI",
+    aiTierNote: "Fast general analysis \u2014 enough to learn the desk workflow.",
+    maxAnalysesPerDay: 5,
+    maxChatMessagesPerDay: 20,
+    maxActiveTracked: 3,
+    maxFavourites: 10,
+    canChangeModel: false,
+    features: [
+      "Basic AI model for Analyse & chat",
+      "Up to 5 analyses per day",
+      "Up to 20 chat messages per day",
+      "Follow up to 3 active signals",
+      "Live charts across major markets",
+      "Personal signal history"
+    ]
+  },
+  pro: {
+    id: "pro",
+    name: "Pro",
+    tagline: "Near pro-level accuracy with a moderate model",
+    priceMonthly: 29,
+    priceAnnual: 24,
+    availability: "coming_soon",
+    aiModel: "openai/gpt-4o-mini",
+    aiModelLabel: "Moderate AI",
+    aiTierNote: "Stronger reasoning for clearer setups \u2014 below Max, above Free.",
+    maxAnalysesPerDay: 40,
+    maxChatMessagesPerDay: 200,
+    maxActiveTracked: 25,
+    maxFavourites: 50,
+    canChangeModel: false,
+    features: [
+      "Moderate AI model (near pro-level)",
+      "Up to 40 analyses per day",
+      "Higher chat allowance",
+      "Follow more active signals",
+      "Priority analysis queue",
+      "Full multi-market coverage"
+    ]
+  },
+  max: {
+    id: "max",
+    name: "Max",
+    tagline: "Highest accuracy with the most powerful models",
+    priceMonthly: 79,
+    priceAnnual: 65,
+    availability: "coming_soon",
+    aiModel: "anthropic/claude-sonnet-4",
+    aiModelLabel: "Powerful AI",
+    aiTierNote: "Top-tier models for the most careful, detailed verdicts.",
+    maxAnalysesPerDay: 150,
+    maxChatMessagesPerDay: 1e3,
+    maxActiveTracked: 100,
+    maxFavourites: 100,
+    canChangeModel: true,
+    features: [
+      "Most powerful AI models",
+      "Highest daily analysis limits",
+      "Desk-scale chat & tracking",
+      "Model choice when available",
+      "Priority support",
+      "Best accuracy among plans"
+    ]
+  }
+};
+var DEFAULT_PLAN_ID = "free";
+function getPlan(id2 = DEFAULT_PLAN_ID) {
+  return PLANS[id2] ?? PLANS.free;
+}
+function toUserPlanView(plan, usage) {
+  return {
+    id: plan.id,
+    name: plan.name,
+    availability: plan.availability,
+    aiModel: plan.aiModel,
+    aiModelLabel: plan.aiModelLabel,
+    aiTierNote: plan.aiTierNote,
+    maxAnalysesPerDay: plan.maxAnalysesPerDay,
+    maxChatMessagesPerDay: plan.maxChatMessagesPerDay,
+    maxActiveTracked: plan.maxActiveTracked,
+    maxFavourites: plan.maxFavourites,
+    canChangeModel: plan.canChangeModel,
+    analysesUsedToday: usage.analysesUsedToday,
+    chatUsedToday: usage.chatUsedToday,
+    upgradeNote: plan.id === "free" ? "Pro and Max plans are coming soon for stronger AI models and higher limits." : ""
+  };
+}
+
+// server/lib/plan.ts
+function resolvePlanId(_userId) {
+  return DEFAULT_PLAN_ID;
+}
+function resolvePlan(userId) {
+  return getPlan(resolvePlanId(userId));
+}
+function buildUserPlanView(userId, analysesUsedToday) {
+  const plan = resolvePlan(userId);
+  return toUserPlanView(plan, {
+    analysesUsedToday,
+    chatUsedToday: store.getChatUsageToday(userId)
+  });
+}
+function applyPlanToSettings(settings, plan) {
+  return {
+    ...settings,
+    aiModel: plan.canChangeModel ? settings.aiModel || plan.aiModel : plan.aiModel,
+    maxSignalsPerDay: Math.min(settings.maxSignalsPerDay, plan.maxAnalysesPerDay),
+    favourites: settings.favourites.slice(0, plan.maxFavourites)
+  };
+}
+function planModelForRequest(userId, settings) {
+  const plan = resolvePlan(userId);
+  if (plan.canChangeModel && settings.aiModel.trim()) return settings.aiModel.trim();
+  return plan.aiModel;
+}
+
 // server/lib/tracking.ts
 import crypto from "node:crypto";
 function id(prefix) {
@@ -2965,6 +3222,21 @@ function computeStats(userId) {
 
 // server/lib/email.ts
 import { Resend } from "resend";
+
+// server/lib/appUrl.ts
+function resolveAppUrl() {
+  const configured = process.env.APP_URL?.trim();
+  if (configured) return configured.replace(/\/$/, "");
+  const vercelHost = process.env.VERCEL_URL?.trim();
+  if (vercelHost) {
+    const host = vercelHost.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    return `https://${host}`;
+  }
+  const port = process.env.PORT || "3000";
+  return `http://localhost:${port}`;
+}
+
+// server/lib/email.ts
 var DEFAULT_FROM = "LURZ AI <onboarding@resend.dev>";
 function getResendClient() {
   const apiKey = process.env.RESEND_API_KEY?.trim();
@@ -3022,6 +3294,31 @@ function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// server/lib/currency.ts
+var CACHE_TTL = 60 * 1e3;
+var rateCache = {};
+async function convertAmount(amount, from, to) {
+  if (!from || !to || from.toUpperCase() === to.toUpperCase()) return amount;
+  const key = `${from.toUpperCase()}_${to.toUpperCase()}`;
+  const now = Date.now();
+  const cached = rateCache[key];
+  if (cached && now - cached.ts < CACHE_TTL) {
+    return amount * cached.rate;
+  }
+  const url = `https://api.exchangerate.host/convert?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&amount=1`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`fx request failed: ${res.status}`);
+    const body = await res.json();
+    const rate = body?.info?.rate ?? body?.result ?? null;
+    if (!rate || typeof rate !== "number") throw new Error("invalid rate");
+    rateCache[key] = { ts: now, rate };
+    return amount * rate;
+  } catch (err) {
+    return amount;
+  }
+}
+
 // server/lib/session.ts
 import crypto2 from "node:crypto";
 var SESSION_COOKIE = "tp_sid";
@@ -3056,8 +3353,6 @@ var api = Router();
 var VALID_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 var VALID_ASSET_CLASSES = ["CRYPTO", "STOCK", "FOREX", "COMMODITY", "INDEX", "ETF"];
 var VALID_SIZE_UNITS = ["QUOTE", "PERCENT"];
-var MIN_WINDOW_MINUTES = 5;
-var MAX_WINDOW_MINUTES = 24 * 60;
 function fail(res, status, message, detail) {
   return res.status(status).json({ error: message, detail: detail ?? void 0 });
 }
@@ -3260,17 +3555,25 @@ api.get("/market/stream-config", async (req, res) => {
     handleError(res, err, "Could not load streaming configuration.");
   }
 });
+api.get("/plan", (req, res) => {
+  const sid = ensureSession(req, res);
+  const todaySignals2 = store.listSignalsSince(sid, startOfDay());
+  res.json(buildUserPlanView(sid, todaySignals2.length));
+});
 api.get("/settings", (req, res) => {
-  res.json(store.getSettings(ensureSession(req, res)));
+  const sid = ensureSession(req, res);
+  const plan = resolvePlan(sid);
+  res.json(applyPlanToSettings(store.getSettings(sid), plan));
 });
 api.put("/settings", (req, res) => {
   const sid = ensureSession(req, res);
+  const plan = resolvePlan(sid);
   const body = req.body || {};
   const numeric = [
     ["minSignalQuality", 0, 100],
     ["minRiskReward", 0.1, 100],
     ["accountRiskPercent", 0.1, 100],
-    ["maxSignalsPerDay", 1, 500],
+    ["maxSignalsPerDay", 1, plan.maxAnalysesPerDay],
     ["cooldownMinutes", 0, 1440],
     ["maxMarketDataAgeSeconds", 5, 3600],
     ["aiTemperature", 0, 2]
@@ -3283,17 +3586,22 @@ api.put("/settings", (req, res) => {
       patch[key] = Math.max(min, Math.min(max, value));
     }
   }
-  if (typeof body.aiModel === "string" && body.aiModel.trim()) patch.aiModel = body.aiModel.trim();
+  if (plan.canChangeModel && typeof body.aiModel === "string" && body.aiModel.trim()) {
+    patch.aiModel = body.aiModel.trim();
+  } else {
+    patch.aiModel = plan.aiModel;
+  }
   if (typeof body.requireStopLoss === "boolean") patch.requireStopLoss = body.requireStopLoss;
   if (parseTimeframe(body.defaultTimeframe)) patch.defaultTimeframe = body.defaultTimeframe;
   if (Array.isArray(body.favourites)) {
-    patch.favourites = body.favourites.filter((f) => typeof f === "string").slice(0, 50);
+    patch.favourites = body.favourites.filter((f) => typeof f === "string").slice(0, plan.maxFavourites);
   }
-  res.json(store.saveSettings(sid, patch));
+  res.json(applyPlanToSettings(store.saveSettings(sid, patch), plan));
 });
 api.post("/analyze", async (req, res) => {
   const sid = ensureSession(req, res);
-  const settings = store.getSettings(sid);
+  const plan = resolvePlan(sid);
+  const settings = applyPlanToSettings(store.getSettings(sid), plan);
   const instrumentId = String(req.body?.instrumentId || "");
   const timeframe = parseTimeframe(req.body?.timeframe) || settings.defaultTimeframe;
   const windowMinutes = parseWindowMinutes(req.body?.windowMinutes);
@@ -3320,6 +3628,29 @@ api.post("/analyze", async (req, res) => {
       "AI analysis is not available on this server. The operator has not configured an AI service key."
     );
   }
+  let reserved = false;
+  let reservedConsumed = false;
+  try {
+    const reservedCount = store.incrementAnalysisUsage(sid);
+    reserved = true;
+    if (reservedCount > plan.maxAnalysesPerDay) {
+      store.decrementAnalysisUsage(sid);
+      return fail(
+        res,
+        429,
+        `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${plan.id === "free" ? " Pro and Max plans with stronger models are coming soon." : ""}`
+      );
+    }
+  } catch (e) {
+    const todaySignals2 = store.listSignalsSince(sid, startOfDay());
+    if (todaySignals2.length >= plan.maxAnalysesPerDay) {
+      return fail(
+        res,
+        429,
+        `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${plan.id === "free" ? " Pro and Max plans with stronger models are coming soon." : ""}`
+      );
+    }
+  }
   try {
     const instrument = await resolveInstrument(instrumentId);
     const provider = getProvider(instrument.provider);
@@ -3327,6 +3658,13 @@ api.post("/analyze", async (req, res) => {
       provider.getQuote(instrument),
       provider.getCandles(instrument, timeframe, 300)
     ]);
+    const preferredCurrency = settings.preferredCurrency || "USD";
+    let convertedQuote = null;
+    try {
+      const converted = await convertAmount(quote.price, quote.currency || "USD", preferredCurrency);
+      convertedQuote = { price: converted, currency: preferredCurrency };
+    } catch (e) {
+    }
     if (candles.length < 30) {
       return fail(
         res,
@@ -3356,14 +3694,13 @@ api.post("/analyze", async (req, res) => {
       intendedSizeNote
     });
     const ai = await requestAIAnalysis({
-      model: settings.aiModel,
+      model: planModelForRequest(sid, settings),
       temperature: settings.aiTemperature,
       userPrompt: prompt,
       marketPrice: quote.price
     });
     ai.analysis.durationMinutes = windowMinutes;
     const quality = computeSignalQuality(analysis, ai.analysis);
-    const todaySignals = store.listSignalsSince(sid, startOfDay());
     const lastTracked = store.listTracked(sid).filter((t) => t.instrumentId === instrument.id).sort((a, b) => b.openedAt - a.openedAt)[0];
     const now = Date.now();
     const tradeIntent = {
@@ -3404,6 +3741,8 @@ api.post("/analyze", async (req, res) => {
       outcome: "PENDING"
     };
     store.insertSignal(record);
+    reservedConsumed = true;
+    const analysesUsedToday = store.getAnalysisUsageToday(sid);
     logger.info("ai: signal generated", {
       instrument: instrument.id,
       timeframe,
@@ -3412,10 +3751,25 @@ api.post("/analyze", async (req, res) => {
       verdict: advice.verdict,
       finalScore: quality.finalScore,
       model: ai.model,
-      latencyMs: ai.latencyMs
+      latencyMs: ai.latencyMs,
+      analysesUsedToday
     });
-    res.json({ signal: record, quote, instrument, notes: ai.notes, model: ai.model });
+    res.json({
+      signal: record,
+      quote,
+      convertedQuote,
+      instrument,
+      notes: ai.notes,
+      model: ai.model,
+      plan: buildUserPlanView(sid, analysesUsedToday)
+    });
   } catch (err) {
+    try {
+      if (reserved && !reservedConsumed) {
+        store.decrementAnalysisUsage(sid);
+      }
+    } catch (e) {
+    }
     handleError(res, err, "The analysis could not be completed. Please try again.");
   }
 });
@@ -3458,6 +3812,7 @@ api.get("/signals/:id/live", async (req, res) => {
 });
 api.post("/tracked", (req, res) => {
   const sid = ensureSession(req, res);
+  const plan = resolvePlan(sid);
   const signalId = String(req.body?.signalId || "");
   const note = typeof req.body?.note === "string" ? req.body.note.slice(0, 280) : void 0;
   if (!signalId) return fail(res, 400, "A signal id is required.");
@@ -3470,6 +3825,14 @@ api.post("/tracked", (req, res) => {
   }
   if (signal.tracked) {
     return fail(res, 409, "You are already following this signal.");
+  }
+  const activeCount = store.listActiveTracked(sid).length;
+  if (activeCount >= plan.maxActiveTracked) {
+    return fail(
+      res,
+      429,
+      `${plan.name} plan limit reached: follow up to ${plan.maxActiveTracked} active signals.${plan.id === "free" ? " Pro and Max are coming soon." : ""}`
+    );
   }
   res.json({ tracked: trackSignal(signal, note) });
 });
@@ -3534,12 +3897,14 @@ api.get("/signals", (req, res) => {
 });
 api.get("/stats", (req, res) => {
   const sid = ensureSession(req, res);
-  const settings = store.getSettings(sid);
-  const todaySignals = store.listSignalsSince(sid, startOfDay());
+  const plan = resolvePlan(sid);
+  const settings = applyPlanToSettings(store.getSettings(sid), plan);
+  const todaySignals2 = store.listSignalsSince(sid, startOfDay());
   res.json({
     stats: computeStats(sid),
-    signalsToday: todaySignals.length,
-    maxSignalsPerDay: settings.maxSignalsPerDay
+    signalsToday: todaySignals2.length,
+    maxSignalsPerDay: Math.min(settings.maxSignalsPerDay, plan.maxAnalysesPerDay),
+    plan: buildUserPlanView(sid, todaySignals2.length)
   });
 });
 api.post("/signals/evaluate", async (req, res) => {
@@ -3553,7 +3918,8 @@ api.post("/signals/evaluate", async (req, res) => {
 });
 api.post("/chat", async (req, res) => {
   const sid = ensureSession(req, res);
-  const settings = store.getSettings(sid);
+  const plan = resolvePlan(sid);
+  const settings = applyPlanToSettings(store.getSettings(sid), plan);
   const rawMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const instrumentId = req.body?.instrumentId ? String(req.body.instrumentId) : null;
   const timeframe = parseTimeframe(req.body?.timeframe) || settings.defaultTimeframe;
@@ -3567,6 +3933,15 @@ api.post("/chat", async (req, res) => {
   if (!isAIConfigured()) {
     return fail(res, 503, "Chat is not available: this server has no AI service configured.");
   }
+  const chatUsed = store.getChatUsageToday(sid);
+  if (chatUsed >= plan.maxChatMessagesPerDay) {
+    return fail(
+      res,
+      429,
+      `${plan.name} plan limit reached: ${plan.maxChatMessagesPerDay} chat messages per day.${plan.id === "free" ? " Pro and Max are coming soon." : ""}`
+    );
+  }
+  store.incrementChatUsage(sid);
   let context = "";
   if (instrumentId) {
     try {
@@ -3612,7 +3987,7 @@ data: ${JSON.stringify(data)}
   req.on("close", () => controller.abort());
   try {
     const result = await streamChat({
-      model: settings.aiModel,
+      model: planModelForRequest(sid, settings),
       temperature: 0.6,
       // conversational, versus the analytical path's low temp
       systemPrompt: CHAT_SYSTEM_PROMPT + context,

@@ -40,6 +40,7 @@ import { checkTrackedSignal, closeTracked, computeStats, trackSignal } from '../
 import { logger } from '../lib/logger';
 import { isEmailConfigured, sendWelcomeEmail } from '../lib/email';
 import { store } from '../lib/store';
+import { convertAmount } from '../lib/currency';
 import { ensureSession } from '../lib/session';
 import type {
   AssetClass,
@@ -417,17 +418,35 @@ api.post('/analyze', async (req, res) => {
       'AI analysis is not available on this server. The operator has not configured an AI service key.');
   }
 
-  const todaySignals = store.listSignalsSince(sid, startOfDay());
-  if (todaySignals.length >= plan.maxAnalysesPerDay) {
-    return fail(
-      res,
-      429,
-      `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${
-        plan.id === 'free'
-          ? ' Pro and Max plans with stronger models are coming soon.'
-          : ''
-      }`
-    );
+  // Reserve an analysis slot atomically to avoid race conditions across concurrent requests.
+  let reserved = false;
+  let reservedConsumed = false;
+  try {
+    const reservedCount = store.incrementAnalysisUsage(sid);
+    reserved = true;
+    if (reservedCount > plan.maxAnalysesPerDay) {
+      // Immediately roll back and reject if the limit was already reached.
+      store.decrementAnalysisUsage(sid);
+      return fail(
+        res,
+        429,
+        `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${
+          plan.id === 'free' ? ' Pro and Max plans with stronger models are coming soon.' : ''
+        }`
+      );
+    }
+  } catch (e) {
+    // If the store fails for any reason, fall back to the previous defensive check.
+    const todaySignals = store.listSignalsSince(sid, startOfDay());
+    if (todaySignals.length >= plan.maxAnalysesPerDay) {
+      return fail(
+        res,
+        429,
+        `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${
+          plan.id === 'free' ? ' Pro and Max plans with stronger models are coming soon.' : ''
+        }`
+      );
+    }
   }
 
   try {
@@ -439,6 +458,16 @@ api.post('/analyze', async (req, res) => {
       provider.getQuote(instrument),
       provider.getCandles(instrument, timeframe, 300),
     ]);
+
+    // Convert the quote for display in the user's preferred currency when possible.
+    const preferredCurrency = settings.preferredCurrency || 'USD';
+    let convertedQuote = null as null | { price: number; currency: string };
+    try {
+      const converted = await convertAmount(quote.price, quote.currency || 'USD', preferredCurrency);
+      convertedQuote = { price: converted, currency: preferredCurrency };
+    } catch (e) {
+      // best-effort: if conversion fails, leave convertedQuote null
+    }
 
     if (candles.length < 30) {
       return fail(res, 422,
@@ -535,9 +564,11 @@ api.post('/analyze', async (req, res) => {
       outcome: 'PENDING',
     };
     store.insertSignal(record);
+    // Mark the reserved slot as consumed so it is not rolled back on error.
+    reservedConsumed = true;
 
     // Fresh count after insert so the client can update usage live without a refresh.
-    const analysesUsedToday = store.listSignalsSince(sid, startOfDay()).length;
+    const analysesUsedToday = store.getAnalysisUsageToday(sid); // use the atomic counter
 
     logger.info('ai: signal generated', {
       instrument: instrument.id,
@@ -554,12 +585,21 @@ api.post('/analyze', async (req, res) => {
     res.json({
       signal: record,
       quote,
+      convertedQuote,
       instrument,
       notes: ai.notes,
       model: ai.model,
       plan: buildUserPlanView(sid, analysesUsedToday),
     });
   } catch (err) {
+    // Release the reserved analysis slot if it was not consumed.
+    try {
+      if (reserved && !reservedConsumed) {
+        store.decrementAnalysisUsage(sid);
+      }
+    } catch (e) {
+      // best-effort
+    }
     handleError(res, err, 'The analysis could not be completed. Please try again.');
   }
 });

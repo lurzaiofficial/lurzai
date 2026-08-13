@@ -249,7 +249,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const establishSession = useCallback(
     (nextUser: AuthUser) => {
       enteringDashboardRef.current = true;
+      initialSessionDoneRef.current = true;
       setUser(nextUser);
+      setIsReady(true);
       clearAuthParam();
     },
     [clearAuthParam],

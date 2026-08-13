@@ -351,6 +351,9 @@ export interface ServerSettings {
 
   defaultTimeframe: Timeframe;
   favourites: string[];
+
+  /** Preferred display currency for this user (ISO 4217). Defaults to USD. */
+  preferredCurrency?: string;
 }
 
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
@@ -368,6 +371,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
 
   defaultTimeframe: '1h',
   favourites: ['binance:BTCUSDT', 'binance:ETHUSDT', 'binance:SOLUSDT'],
+  preferredCurrency: 'USD',
 };
 
 // --------------------------------------------------------------- performance
