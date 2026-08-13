@@ -1732,41 +1732,65 @@ The user's minimum acceptable risk/reward is ${params.minRiskReward}. If you can
 Analyse this data and respond with the required JSON object only.`;
 }
 async function requestAIAnalysis(params) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new AIError("AI analysis is not available right now. The service is missing its configuration.");
-  }
+  const provider = process.env.AI_PROVIDER || "gemini";
   const started = Date.now();
   let res;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45e3);
   try {
-    const url = new URL(GEMINI_URL);
-
-    res = await fetch(url.toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: SYSTEM_PROMPT }]
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: params.userPrompt }]
-          }
+    if (provider === "openrouter") {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) throw new AIError("AI analysis is not available: OPENROUTER_API_KEY is not configured.");
+      const url = process.env.GEMINI_BASE_URL || "https://api.openrouter.ai/v1/chat/completions";
+      const body = {
+        model: params.model || "gpt-4o-mini",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: params.userPrompt }
         ],
-        generationConfig: {
-          temperature: params.temperature,
-          maxOutputTokens: 1200,
-          responseMimeType: "application/json"
-        }
-      }),
-      signal: controller.signal
-    });
+        temperature: params.temperature,
+        max_tokens: 1200
+      };
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+    } else {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new AIError("AI analysis is not available right now. The service is missing its configuration.");
+      }
+      const url = new URL(GEMINI_URL);
+      res = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: SYSTEM_PROMPT }]
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: params.userPrompt }]
+            }
+          ],
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1200,
+            responseMimeType: "application/json"
+          }
+        }),
+        signal: controller.signal
+      });
+    }
   } catch (err) {
     if (err.name === "AbortError") {
       throw new AIError("The analysis took too long and was cancelled. Please try again.");
@@ -1777,7 +1801,7 @@ async function requestAIAnalysis(params) {
   }
   const text = await res.text();
   if (!res.ok) {
-    logger.error("ai: gemini request failed", { status: res.status, body: text.slice(0, 400) });
+    logger.error("ai: provider request failed", { status: res.status, body: text.slice(0, 400), provider });
     if (res.status === 401 || res.status === 403) throw new AIError("AI analysis is unavailable: the service key was rejected.");
     if (res.status === 429) throw new AIError("Too many analysis requests right now. Please wait a moment and try again.");
     if (res.status === 404) throw new AIError(`The configured AI model "${params.model}" is not available.`);
@@ -1785,10 +1809,16 @@ async function requestAIAnalysis(params) {
   }
   let content;
   try {
-    const parsed2 = JSON.parse(text);
-    content = parsed2?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-  } catch {
-    logger.error("ai: non-JSON envelope from gemini", { body: text.slice(0, 400) });
+    if (provider === "openrouter") {
+      const parsed2 = JSON.parse(text);
+      content = parsed2?.choices?.[0]?.message?.content ?? parsed2?.choices?.[0]?.message ?? parsed2?.choices?.[0]?.text ?? "";
+      if (typeof content === "object") content = content?.content ?? "";
+    } else {
+      const parsed2 = JSON.parse(text);
+      content = parsed2?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    }
+  } catch (e) {
+    logger.error("ai: non-JSON envelope from provider", { body: text.slice(0, 400), provider });
     throw new AIError("The AI service returned an unreadable response.");
   }
   const parsed = extractJson(content);
@@ -1927,38 +1957,75 @@ async function streamChat(params) {
   ];
   let res;
   try {
-    res = await fetch(GEMINI_URL2, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          role: "user",
-          parts: [{ text: params.systemPrompt }]
+    if (process.env.AI_PROVIDER === "openrouter") {
+      const apiKey2 = process.env.OPENROUTER_API_KEY;
+      if (!apiKey2) throw new ChatError("Chat is unavailable: OPENROUTER_API_KEY is not configured.");
+      const url = process.env.GEMINI_BASE_URL || "https://api.openrouter.ai/v1/chat/completions";
+      const body = {
+        model: params.model || "gpt-4o-mini",
+        messages: [
+          { role: "system", content: params.systemPrompt },
+          ...params.messages.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }))
+        ],
+        temperature: params.temperature,
+        max_tokens: 1500
+      };
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey2}`
         },
-        contents,
-        generationConfig: {
-          temperature: params.temperature,
-          maxOutputTokens: 1500,
-          topP: 0.95,
-          topK: 40
-        }
-      }),
-      signal: params.signal
-    });
+        body: JSON.stringify(body),
+        signal: params.signal
+      });
+    } else {
+      res = await fetch(GEMINI_URL2, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            role: "user",
+            parts: [{ text: params.systemPrompt }]
+          },
+          contents,
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1500,
+            topP: 0.95,
+            topK: 40
+          }
+        }),
+        signal: params.signal
+      });
+    }
   } catch (err) {
     if (err.name === "AbortError") throw new ChatError("Cancelled.");
     throw new ChatError("Could not reach the AI service. Please try again.");
   }
   if (!res.ok) {
     const body = await res.text();
-    logger.error("chat: gemini request failed", { status: res.status, body: body.slice(0, 300) });
+    logger.error("chat: provider request failed", { status: res.status, body: body.slice(0, 300), provider: process.env.AI_PROVIDER || "gemini" });
     if (res.status === 401 || res.status === 403)
       throw new ChatError("Chat is unavailable: the service key was rejected.");
     if (res.status === 429) throw new ChatError("Too many messages right now. Please wait a moment.");
     throw new ChatError("The AI service returned an error. Please try again.");
+  }
+  if (process.env.AI_PROVIDER === "openrouter") {
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      const content = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.text ?? "";
+      if (!content) throw new Error("empty");
+      params.onDelta(content);
+      return { full: content, latencyMs: Date.now() - started };
+    } catch (e) {
+      logger.error("chat: non-JSON envelope from provider", { body: text.slice(0, 400) });
+      throw new ChatError("The AI service returned an unreadable response.");
+    }
   }
   if (!res.body) throw new ChatError("The AI service returned an empty response.");
   const reader = res.body.getReader();
@@ -2311,7 +2378,8 @@ var DEFAULT_SERVER_SETTINGS = {
   requireStopLoss: true,
   maxMarketDataAgeSeconds: 120,
   defaultTimeframe: "1h",
-  favourites: ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+  favourites: ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"],
+  preferredCurrency: "USD"
 };
 
 // server/lib/store.ts
@@ -2495,6 +2563,39 @@ var Store = class {
     }
     this.persist();
     return this.db.usage[userId].chatCount;
+  }
+  // ---------------------------------------------------------------- analysis usage
+  getAnalysisUsageToday(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== utcDayKey(now)) return 0;
+    return row.analysesCount || 0;
+  }
+  incrementAnalysisUsage(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    let row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) {
+      row = { dayKey, chatCount: row && row.dayKey === dayKey ? row.chatCount : 0 };
+      row.analysesCount = 1;
+      this.db.usage[userId] = row;
+    } else {
+      row.analysesCount = (row.analysesCount || 0) + 1;
+    }
+    this.persist();
+    return this.db.usage[userId].analysesCount;
+  }
+  decrementAnalysisUsage(userId, now = Date.now()) {
+    this.load();
+    if (!this.db.usage) this.db.usage = {};
+    const dayKey = utcDayKey(now);
+    const row = this.db.usage[userId];
+    if (!row || row.dayKey !== dayKey) return 0;
+    row.analysesCount = Math.max(0, (row.analysesCount || 0) - 1);
+    this.persist();
+    return row.analysesCount;
   }
 };
 function push(map, key, value) {
@@ -3193,6 +3294,31 @@ function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// server/lib/currency.ts
+var CACHE_TTL = 60 * 1e3;
+var rateCache = {};
+async function convertAmount(amount, from, to) {
+  if (!from || !to || from.toUpperCase() === to.toUpperCase()) return amount;
+  const key = `${from.toUpperCase()}_${to.toUpperCase()}`;
+  const now = Date.now();
+  const cached = rateCache[key];
+  if (cached && now - cached.ts < CACHE_TTL) {
+    return amount * cached.rate;
+  }
+  const url = `https://api.exchangerate.host/convert?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&amount=1`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`fx request failed: ${res.status}`);
+    const body = await res.json();
+    const rate = body?.info?.rate ?? body?.result ?? null;
+    if (!rate || typeof rate !== "number") throw new Error("invalid rate");
+    rateCache[key] = { ts: now, rate };
+    return amount * rate;
+  } catch (err) {
+    return amount;
+  }
+}
+
 // server/lib/session.ts
 import crypto2 from "node:crypto";
 var SESSION_COOKIE = "tp_sid";
@@ -3431,8 +3557,8 @@ api.get("/market/stream-config", async (req, res) => {
 });
 api.get("/plan", (req, res) => {
   const sid = ensureSession(req, res);
-  const todaySignals = store.listSignalsSince(sid, startOfDay());
-  res.json(buildUserPlanView(sid, todaySignals.length));
+  const todaySignals2 = store.listSignalsSince(sid, startOfDay());
+  res.json(buildUserPlanView(sid, todaySignals2.length));
 });
 api.get("/settings", (req, res) => {
   const sid = ensureSession(req, res);
@@ -3502,13 +3628,28 @@ api.post("/analyze", async (req, res) => {
       "AI analysis is not available on this server. The operator has not configured an AI service key."
     );
   }
-  const todaySignals = store.listSignalsSince(sid, startOfDay());
-  if (todaySignals.length >= plan.maxAnalysesPerDay) {
-    return fail(
-      res,
-      429,
-      `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${plan.id === "free" ? " Pro and Max plans with stronger models are coming soon." : ""}`
-    );
+  let reserved = false;
+  let reservedConsumed = false;
+  try {
+    const reservedCount = store.incrementAnalysisUsage(sid);
+    reserved = true;
+    if (reservedCount > plan.maxAnalysesPerDay) {
+      store.decrementAnalysisUsage(sid);
+      return fail(
+        res,
+        429,
+        `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${plan.id === "free" ? " Pro and Max plans with stronger models are coming soon." : ""}`
+      );
+    }
+  } catch (e) {
+    const todaySignals2 = store.listSignalsSince(sid, startOfDay());
+    if (todaySignals2.length >= plan.maxAnalysesPerDay) {
+      return fail(
+        res,
+        429,
+        `${plan.name} plan limit reached: ${plan.maxAnalysesPerDay} analyses per day.${plan.id === "free" ? " Pro and Max plans with stronger models are coming soon." : ""}`
+      );
+    }
   }
   try {
     const instrument = await resolveInstrument(instrumentId);
@@ -3517,6 +3658,13 @@ api.post("/analyze", async (req, res) => {
       provider.getQuote(instrument),
       provider.getCandles(instrument, timeframe, 300)
     ]);
+    const preferredCurrency = settings.preferredCurrency || "USD";
+    let convertedQuote = null;
+    try {
+      const converted = await convertAmount(quote.price, quote.currency || "USD", preferredCurrency);
+      convertedQuote = { price: converted, currency: preferredCurrency };
+    } catch (e) {
+    }
     if (candles.length < 30) {
       return fail(
         res,
@@ -3593,7 +3741,8 @@ api.post("/analyze", async (req, res) => {
       outcome: "PENDING"
     };
     store.insertSignal(record);
-    const analysesUsedToday = store.listSignalsSince(sid, startOfDay()).length;
+    reservedConsumed = true;
+    const analysesUsedToday = store.getAnalysisUsageToday(sid);
     logger.info("ai: signal generated", {
       instrument: instrument.id,
       timeframe,
@@ -3608,12 +3757,19 @@ api.post("/analyze", async (req, res) => {
     res.json({
       signal: record,
       quote,
+      convertedQuote,
       instrument,
       notes: ai.notes,
       model: ai.model,
       plan: buildUserPlanView(sid, analysesUsedToday)
     });
   } catch (err) {
+    try {
+      if (reserved && !reservedConsumed) {
+        store.decrementAnalysisUsage(sid);
+      }
+    } catch (e) {
+    }
     handleError(res, err, "The analysis could not be completed. Please try again.");
   }
 });
@@ -3743,12 +3899,12 @@ api.get("/stats", (req, res) => {
   const sid = ensureSession(req, res);
   const plan = resolvePlan(sid);
   const settings = applyPlanToSettings(store.getSettings(sid), plan);
-  const todaySignals = store.listSignalsSince(sid, startOfDay());
+  const todaySignals2 = store.listSignalsSince(sid, startOfDay());
   res.json({
     stats: computeStats(sid),
-    signalsToday: todaySignals.length,
+    signalsToday: todaySignals2.length,
     maxSignalsPerDay: Math.min(settings.maxSignalsPerDay, plan.maxAnalysesPerDay),
-    plan: buildUserPlanView(sid, todaySignals.length)
+    plan: buildUserPlanView(sid, todaySignals2.length)
   });
 });
 api.post("/signals/evaluate", async (req, res) => {
