@@ -163,27 +163,53 @@ export async function streamChat(params: {
 
   let res: Response;
   try {
-    res = await fetch(GEMINI_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          role: 'user',
-          parts: [{ text: params.systemPrompt }],
+    if (process.env.AI_PROVIDER === 'openrouter') {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) throw new ChatError('Chat is unavailable: OPENROUTER_API_KEY is not configured.');
+      const url = process.env.GEMINI_BASE_URL || 'https://api.openrouter.ai/v1/chat/completions';
+      // OpenRouter may not stream the same way; do a single request and deliver the full text
+      const body = {
+        model: params.model || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: params.systemPrompt },
+          ...params.messages.map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content })),
+        ],
+        temperature: params.temperature,
+        max_tokens: 1500,
+      };
+
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
         },
-        contents,
-        generationConfig: {
-          temperature: params.temperature,
-          maxOutputTokens: 1500,
-          topP: 0.95,
-          topK: 40,
+        body: JSON.stringify(body),
+        signal: params.signal,
+      });
+    } else {
+      res = await fetch(GEMINI_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
         },
-      }),
-      signal: params.signal,
-    });
+        body: JSON.stringify({
+          system_instruction: {
+            role: 'user',
+            parts: [{ text: params.systemPrompt }],
+          },
+          contents,
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1500,
+            topP: 0.95,
+            topK: 40,
+          },
+        }),
+        signal: params.signal,
+      });
+    }
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw new ChatError('Cancelled.');
     throw new ChatError('Could not reach the AI service. Please try again.');
@@ -191,12 +217,27 @@ export async function streamChat(params: {
 
   if (!res.ok) {
     const body = await res.text();
-    logger.error('chat: gemini request failed', { status: res.status, body: body.slice(0, 300) });
+    logger.error('chat: provider request failed', { status: res.status, body: body.slice(0, 300), provider: process.env.AI_PROVIDER || 'gemini' });
 
     if (res.status === 401 || res.status === 403)
       throw new ChatError('Chat is unavailable: the service key was rejected.');
     if (res.status === 429) throw new ChatError('Too many messages right now. Please wait a moment.');
     throw new ChatError('The AI service returned an error. Please try again.');
+  }
+
+  if (process.env.AI_PROVIDER === 'openrouter') {
+    // Non-streaming response: deliver full content in one go
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      const content = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.text ?? '';
+      if (!content) throw new Error('empty');
+      params.onDelta(content);
+      return { full: content, latencyMs: Date.now() - started };
+    } catch (e) {
+      logger.error('chat: non-JSON envelope from provider', { body: text.slice(0, 400) });
+      throw new ChatError('The AI service returned an unreadable response.');
+    }
   }
 
   if (!res.body) throw new ChatError('The AI service returned an empty response.');

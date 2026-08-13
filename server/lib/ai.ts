@@ -219,11 +219,7 @@ export async function requestAIAnalysis(params: {
   userPrompt: string;
   marketPrice: number;
 }): Promise<AIRequestResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    // Operator misconfiguration; the user cannot fix this, so say so plainly.
-    throw new AIError('AI analysis is not available right now. The service is missing its configuration.');
-  }
+  const provider = process.env.AI_PROVIDER || 'gemini';
 
   const started = Date.now();
   let res: Response;
@@ -232,32 +228,65 @@ export async function requestAIAnalysis(params: {
   const timer = setTimeout(() => controller.abort(), 45000);
 
   try {
-    const url = new URL(GEMINI_URL);
+    if (provider === 'openrouter') {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) throw new AIError('AI analysis is not available: OPENROUTER_API_KEY is not configured.');
 
-    res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: { text: SYSTEM_PROMPT },
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: { text: params.userPrompt },
-          },
+      const url = process.env.GEMINI_BASE_URL || 'https://api.openrouter.ai/v1/chat/completions';
+
+      const body = {
+        model: params.model || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: params.userPrompt },
         ],
-        generationConfig: {
-          temperature: params.temperature,
-          maxOutputTokens: 1200,
-          responseMimeType: 'application/json',
+        temperature: params.temperature,
+        max_tokens: 1200,
+      };
+
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
         },
-      }),
-      signal: controller.signal,
-    });
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } else {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        // Operator misconfiguration; the user cannot fix this, so say so plainly.
+        throw new AIError('AI analysis is not available right now. The service is missing its configuration.');
+      }
+
+      const url = new URL(GEMINI_URL);
+
+      res = await fetch(url.toString(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: { text: SYSTEM_PROMPT },
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: { text: params.userPrompt },
+            },
+          ],
+          generationConfig: {
+            temperature: params.temperature,
+            maxOutputTokens: 1200,
+            responseMimeType: 'application/json',
+          },
+        }),
+        signal: controller.signal,
+      });
+    }
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       throw new AIError('The analysis took too long and was cancelled. Please try again.');
@@ -271,7 +300,7 @@ export async function requestAIAnalysis(params: {
 
   if (!res.ok) {
     // Technical detail is logged; the user gets something actionable.
-    logger.error('ai: gemini request failed', { status: res.status, body: text.slice(0, 400) });
+    logger.error('ai: provider request failed', { status: res.status, body: text.slice(0, 400), provider });
 
     if (res.status === 401 || res.status === 403) throw new AIError('AI analysis is unavailable: the service key was rejected.');
     if (res.status === 429) throw new AIError('Too many analysis requests right now. Please wait a moment and try again.');
@@ -281,10 +310,17 @@ export async function requestAIAnalysis(params: {
 
   let content: string;
   try {
-    const parsed = JSON.parse(text);
-    content = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  } catch {
-    logger.error('ai: non-JSON envelope from gemini', { body: text.slice(0, 400) });
+    if (provider === 'openrouter') {
+      const parsed = JSON.parse(text);
+      // OpenRouter/OpenAI-compatible response: choices[0].message.content or choices[0].message
+      content = parsed?.choices?.[0]?.message?.content ?? parsed?.choices?.[0]?.message ?? parsed?.choices?.[0]?.text ?? '';
+      if (typeof content === 'object') content = content?.content ?? '';
+    } else {
+      const parsed = JSON.parse(text);
+      content = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    }
+  } catch (e) {
+    logger.error('ai: non-JSON envelope from provider', { body: text.slice(0, 400), provider });
     throw new AIError('The AI service returned an unreadable response.');
   }
 
